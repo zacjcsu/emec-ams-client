@@ -6,6 +6,7 @@ from rfid.reader import RFIDReader
 from rfid.scan_flow import ScanFlow
 from utils.card_activity import CardActivity
 from relay.session_manager import SessionManager, recover_orphaned_sessions, QUIET_END_REASONS
+from relay.kinds import load_kind
 from relay.controller import RelayController
 from lcd.lcd import LCD
 from utils.leds import StatusLEDs
@@ -35,19 +36,20 @@ file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 logger = logging.getLogger("main")
-logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s)", MACHINE_ID)
+kind = load_kind()
+logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name)
 
 lcd = LCD()
 db = LocalDB()
 relay = RelayController()
 leds = StatusLEDs()
 reader = RFIDReader(leds=leds)
-lockout = LockoutMonitor(relay)
+lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID)
 session_mgr = SessionManager(db, lcd, relay, lockout)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
-flow = ScanFlow(reader, db, lcd, relay, activity)
+flow = ScanFlow(reader, db, lcd, activity)
 
 def exit_handler(sig, frame):
     # De-energise first: everything below can raise, and the machine must not
@@ -139,14 +141,7 @@ def main():
             flow.session_started()
             session_mgr.start_session(started.csu_id, started.display_name, started.card_uid, started.temp,
                                       started.bypass)
-            # The grace period only applies when the card was removed. If the server or a new card already
-            # ended the session (lost card, revoke, expiry, emergency stop), there is nothing to resume.
-            # A resumed session is watched again here, so the next removal gets its own grace period.
-            ended = session_mgr.wait_for_card_removal(reader)
-            while ended == "removed":
-                ended = session_mgr.handle_grace_period(reader)
-                if ended == "resumed":
-                    ended = session_mgr.wait_for_card_removal(reader)
+            ended = kind.run(session_mgr, reader)
             skip_startup = ended in QUIET_END_REASONS
         except Exception:
             logger.exception("[MAIN] Unhandled error in main loop; recovering.")

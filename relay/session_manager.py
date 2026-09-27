@@ -1,14 +1,14 @@
 import time
 import uuid
 import logging
-from config.constants import MACHINE_ID, CARD_GRACE_PERIOD_DEFAULT
+from config.constants import MACHINE_ID
 from datetime import datetime
 from db.server_sync import (
     sync_session_to_server, push_session_start, push_user_status, push_machine_status, fetch_last_heartbeat,
 )
 from utils.timeutil import TS_FORMAT
 from config.constants import (
-    STATUS_NEUTRAL, STATUS_IN_USE, STATUS_MAINTENANCE, LCD_LINE_DELAY, CARD_POLL_INTERVAL, LCD_MESSAGES,
+    STATUS_NEUTRAL, STATUS_IN_USE, STATUS_MAINTENANCE, LCD_LINE_DELAY, LCD_MESSAGES,
 )
 
 logger = logging.getLogger("session")
@@ -35,6 +35,9 @@ REVOKED_MESSAGES = {
 QUIET_END_REASONS = ("user_disabled", "group_disabled")
 
 class SessionManager:
+    """Starting and ending sessions: the local and server records, machine status, relay and screen.
+    How a running session is watched depends on the machine's kind (relay/kinds.py)."""
+
     def __init__(self, db, lcd, relay, lockout=None):
         self.lockout = lockout
         self.db = db
@@ -53,7 +56,7 @@ class SessionManager:
         if self.lockout:
             self.lockout.unwatch()
 
-    def _show(self, line1, line2, color, delay=0):
+    def show(self, line1, line2, color, delay=0):
         self.lcd.display(line1, line2, color=color)
         if delay:
             time.sleep(delay)
@@ -92,9 +95,14 @@ class SessionManager:
 
         self.relay.turn_on()
         line2 = "in use MAINT" if self.active_bypass else "in use TEMP CARD" if temp else "in use"
-        self._show(display_name[:16], line2, color="green")
+        self.show(display_name[:16], line2, color="green")
 
-    def _lockout_reason(self):
+    def resume_session(self):
+        """Carry on the current session after its card came back."""
+        self.start_session(self.active_csu_id, self.display_name, self.active_card_uid, self.active_temp,
+                           self.active_bypass)
+
+    def lockout_reason(self):
         """None, 'estop', 'maintenance', or the server's reason the signed-in user lost access."""
         if not self.lockout:
             return None
@@ -104,7 +112,7 @@ class SessionManager:
             return "maintenance"
         return self.lockout.revoked_reason
 
-    def _end_for_lockout(self, reason):
+    def end_for_lockout(self, reason):
         logger.warning(f"[SESSION] Ending session: {reason}.")
         if reason == "user_disabled":
             # The dashboard's own two-line message: line 1, a newline, an optional line 2.
@@ -115,95 +123,16 @@ class SessionManager:
         if reason in QUIET_END_REASONS:
             # The message stays up: the next scan of the card still on the reader shows and holds it, so skip
             # the delay, the "Session ended" screen and the startup checks that would flash over it.
-            self._show(line1, line2, color="red")
+            self.show(line1, line2, color="red")
             self.force_end_session(quiet=True)
             return
         if reason == "outside_hours":
-            # "Lab closed / Session ended" stays up; wait_for_card_removal holds it until the card is removed.
-            self._show(line1, line2, color="red")
+            # "Lab closed / Session ended" stays up; the machine's kind decides how long.
+            self.show(line1, line2, color="red")
             self.force_end_session(quiet=True)
             return
-        self._show(line1, line2, color="red", delay=LCD_LINE_DELAY)
+        self.show(line1, line2, color="red", delay=LCD_LINE_DELAY)
         self.force_end_session()
-
-    def _hold_until_card_gone(self, reader, misses_to_remove=3):
-        """Leave the LCD alone until the reader has seen no card for a few polls in a row (a single missed
-        read is common and does not mean the card was removed)."""
-        misses = 0
-        while misses < misses_to_remove:
-            misses = misses + 1 if reader.read_card_ex() is None else 0
-            time.sleep(CARD_POLL_INTERVAL)
-
-    def _classify(self, scan):
-        """'same' if `scan` is the card that started this session, 'other' if it is a different card,
-        'absent' if there is no card. A temporary card is recognised by its UID (it has no CSU ID); a student
-        card by its CSU ID, as before. An unreadable non-student card during a student session counts as absent."""
-        if scan is None:
-            return "absent"
-        if self.active_temp:
-            return "same" if scan.uid_hex == self.active_card_uid else "other"
-        if scan.csu_id is None:
-            return "absent"
-        return "same" if scan.csu_id == self.active_csu_id else "other"
-
-    def wait_for_card_removal(self, reader):
-        """Watch the card while the session runs. Returns why the wait ended:
-        'removed'  the card left the reader: the caller starts the grace period;
-        'new_card' a different card was presented: the session is already ended;
-        otherwise  the reason the server ended it (a lockout: estop, lost/expired card, access lost),
-                   also already ended. Only 'removed' has a session left to give a grace period to."""
-        absence_start = None
-        while True:
-            reason = self._lockout_reason()
-            if reason:
-                self._end_for_lockout(reason)
-                if reason == "outside_hours":
-                    self._hold_until_card_gone(reader)
-                return reason
-            state = self._classify(reader.read_card_ex())
-            if state == "same":
-                absence_start = None
-            elif state == "other":
-                logger.info("[SESSION] New card detected mid-session.")
-                self._show("New card mid-sesh", "Resetting...", color="red", delay=LCD_LINE_DELAY)
-                self.force_end_session()
-                return "new_card"
-            else:
-                if absence_start is None:
-                    absence_start = time.time()
-                elif time.time() - absence_start >= 3:
-                    self._show("Card removed", "Waiting for reinsert", color="yellow")
-                    return "removed"
-            time.sleep(0.5)
-
-    def handle_grace_period(self, reader):
-        grace_period = int(self.db.get_setting("grace_period_seconds", default=CARD_GRACE_PERIOD_DEFAULT))
-        end_time = time.time() + grace_period
-        while time.time() < end_time:
-            reason = self._lockout_reason()
-            if reason:
-                self._end_for_lockout(reason)
-                if reason == "outside_hours":
-                    self._hold_until_card_gone(reader)
-                return reason
-            remaining = int(end_time - time.time())
-            self.lcd.display("Remove detected", f"Reinsert: {remaining}s", color="yellow")
-
-            state = self._classify(reader.read_card_ex())
-            if state == "same":
-                self._show("Session", "resumed", color="green", delay=1)
-                self.start_session(self.active_csu_id, self.display_name, self.active_card_uid, self.active_temp,
-                                   self.active_bypass)
-                return "resumed"
-            elif state == "other":
-                self._show("New card at grace", "Resetting...", color="red", delay=LCD_LINE_DELAY)
-                self.force_end_session()
-                return "new_card"
-            time.sleep(1)
-
-        self.force_end_session()
-        logger.info("[SESSION] Ended after grace period.")
-        return "timeout"
 
     def force_end_session(self, quiet=False):
         if not self.active_session_id:
@@ -221,7 +150,7 @@ class SessionManager:
         logger.info(f"[SESSION] Ended: {self.display_name} ({self.active_csu_id}), duration: {duration_min} min")
 
         if not quiet:
-            self._show("Session", "ended", color="red", delay=1)
+            self.show("Session", "ended", color="red", delay=1)
 
         self._reset_session_state()
         self.relay.turn_off()

@@ -39,10 +39,10 @@ class SessionStart:
 
 
 class ScanFlow:
-    def __init__(self, reader, db, lcd, relay, activity):
+    def __init__(self, reader, db, lcd, activity):
         self.reader = reader
         self.io = CardIO(reader.reader)
-        self.db, self.lcd, self.relay, self.activity = db, lcd, relay, activity
+        self.db, self.lcd, self.activity = db, lcd, activity
         self._reset_arrival(None)
         self._misses = 0
 
@@ -96,7 +96,7 @@ class ScanFlow:
 
         if scan.csu_id is not None:                      # a student card: the normal path, unchanged
             scanned_at = time.monotonic()                # a refusal can hold the card for a while
-            csu_id, name = validate_card(scan.csu_id, scan.uid_num, self.db, self.lcd, self.relay,
+            csu_id, name = validate_card(scan.csu_id, scan.uid_num, self.db, self.lcd,
                                          hold_until_removed=self._hold_until_removed)
             if csu_id:
                 self.activity.set_present(None)
@@ -223,7 +223,7 @@ class ScanFlow:
             return None
 
         scanned_at = time.monotonic()
-        csu_id, name = validate_card(v["csu_id"], None, self.db, self.lcd, self.relay, temp=True,
+        csu_id, name = validate_card(v["csu_id"], None, self.db, self.lcd, temp=True,
                                      hold_until_removed=self._hold_until_removed)
         if not csu_id:
             self._refused(scan, v["csu_id"], name, scanned_at)

@@ -27,13 +27,14 @@ def load_machine_config():
             return (
                 data.get("machine_id", "UNKNOWN"),
                 data.get("machine_name", "Unnamed Machine"),
-                data.get("machine_type", "Unknown Type")
+                data.get("machine_type", "Unknown Type"),
+                data.get("kind", "attended"),   # how sessions run, see relay/kinds.py
             )
     except Exception as e:
         logger.warning(f"Could not load config/config.json: {e}")
-        return ("UNKNOWN", "Unnamed Machine", "Unknown Type")
+        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended")
 
-MACHINE_ID, MACHINE_NAME, MACHINE_TYPE = load_machine_config()
+MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND = load_machine_config()
 MACHINE_ID = MACHINE_ID.casefold()
 
 

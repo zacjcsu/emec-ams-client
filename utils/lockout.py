@@ -24,8 +24,8 @@ class LockoutMonitor:
       is the exception: its session runs with the lock lifted, and the lock returns when it ends.
     * Access revoked mid-session: while a user is being watched (SessionManager calls watch/unwatch),
       the server's access_decision_machine() is asked about them every ACCESS_RECHECK_SECONDS. If they
-      no longer have access (lab closed, group disabled, permission revoked) the relay is cut and
-      `revoked_reason` is set for the session loop to end the session.
+      no longer have access (lab closed, group disabled, permission revoked) `revoked_reason` is set for the
+      session loop to end the session, and the relay is cut if the machine's kind says to.
     * Message: what the dashboard wants on this machine's screen, from machine_message() (dashboard migration
       028), as `message` (line1, line2), or None. That's the open maintenance record's two lines, or else
       "Service due" for a due service task. It's separate from the lock, so a running machine can have one.
@@ -34,8 +34,9 @@ class LockoutMonitor:
     lifts a lockout, and does not end a running session.
     """
 
-    def __init__(self, relay, machine_id=MACHINE_ID):
+    def __init__(self, relay, kind, machine_id=MACHINE_ID):
         self.relay = relay
+        self.kind = kind
         self.machine_id = machine_id
         self.estop_active = False
         self.maintenance_active = False
@@ -135,9 +136,11 @@ class LockoutMonitor:
                 first = self.revoked_reason is None
                 self.revoked_reason = row["reason"]
                 self.revoked_via = row.get("via")
-            self.relay.turn_off()
+            cut = self.kind.cut_power_on_revoke(row["reason"])
+            if cut:
+                self.relay.turn_off()
             if first:
-                logger.warning(f"[LOCKOUT] Access revoked for {csu_id} ({row['reason']}): relay off.")
+                logger.warning(f"[LOCKOUT] Access revoked for {csu_id} ({row['reason']})" + (": relay off." if cut else "."))
 
     def _run(self):
         conn = None
