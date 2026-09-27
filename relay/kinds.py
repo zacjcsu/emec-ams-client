@@ -7,7 +7,7 @@ An emergency shutdown or maintenance lock cuts the power for every kind (Lockout
 import logging
 import time
 
-from config.constants import CARD_GRACE_PERIOD_DEFAULT, CARD_POLL_INTERVAL, LCD_LINE_DELAY, MACHINE_KIND
+from config.constants import CARD_GRACE_PERIOD_DEFAULT, LCD_LINE_DELAY, MACHINE_KIND
 
 logger = logging.getLogger("kinds")
 
@@ -51,14 +51,8 @@ class Attended:
             session.end_for_lockout(reason)
             if reason == "outside_hours":
                 # "Lab closed / Session ended" stays up until the card is removed.
-                self._hold_until_card_gone(reader)
+                reader.wait_until_removed()
         return reason
-
-    def _hold_until_card_gone(self, reader, misses_to_remove=3):
-        misses = 0
-        while misses < misses_to_remove:
-            misses = misses + 1 if reader.read_card_ex() is None else 0
-            time.sleep(CARD_POLL_INTERVAL)
 
     def _watch_card(self, session, reader):
         """'removed' when the card left the reader, 'new_card' when a different card was presented (the session

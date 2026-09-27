@@ -3,16 +3,13 @@ import RPi.GPIO as GPIO
 import time
 import logging
 from collections import namedtuple
+from config.constants import CARD_POLL_INTERVAL
+from rfid.card_io import uid_hex
 
 logger = logging.getLogger("rfid")
 
 AUTH_KEY = [0x4A, 0x1E, 0xD9, 0x40, 0xF4, 0x4B]  # CSU card sector key
 SECTOR = 1  # Sector containing CSU ID
-
-def uid_hex(uid):
-    """The card UID as the server stores it: the first 4 bytes, upper-case hex."""
-    return "".join("%02X" % b for b in uid[:4])
-
 
 class CardScan(namedtuple("CardScan", "uid uid_hex uid_num csu_id")):
     __slots__ = ()
@@ -76,12 +73,21 @@ class RFIDReader:
         logger.info(f"[RFID] Card scanned - UID: {uid_num}, CSU ID: {csu_id}")
         return CardScan(scan.uid, scan.uid_hex, uid_num, csu_id)
 
-    def read_card(self):
-        """Student cards only: (uid_num, csu_id), or None for no card / not a student card."""
-        scan = self.read_card_ex()
-        if scan is None or scan.csu_id is None:
-            return None
-        return scan.uid_num, scan.csu_id
+    def wait_until_removed(self, poll=CARD_POLL_INTERVAL, max_seconds=None, recheck=None, recheck_every=2.0):
+        """Block until no card has been seen for 3 polls in a row (a single missed read is common), leaving the LCD
+        alone. Gives up after `max_seconds` if set. If `recheck` is given it is called every `recheck_every` seconds
+        while the card is there; when it returns True, stop. Returns True if it stopped for `recheck`."""
+        end = time.time() + max_seconds if max_seconds else None
+        misses = 0
+        last = time.monotonic()
+        while misses < 3 and (end is None or time.time() < end):
+            misses = misses + 1 if self.read_card_ex() is None else 0
+            time.sleep(poll)
+            if recheck and misses == 0 and time.monotonic() - last >= recheck_every:
+                last = time.monotonic()
+                if recheck():
+                    return True
+        return False
 
     def cleanup(self):
         GPIO.cleanup()

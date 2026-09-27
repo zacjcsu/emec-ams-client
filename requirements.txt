@@ -1,6 +1,4 @@
 python-dotenv
-python-dateutil
 psycopg[binary]
 mfrc522; sys_platform == "linux"
-RPLCD
 smbus2

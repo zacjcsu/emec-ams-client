@@ -1,13 +1,9 @@
 import sqlite3
-import os
 import logging
-from config.constants import LOCAL_DB_PATH
+from config.constants import LOCAL_DB_PATH, STATUS_NEUTRAL
 from create_local_db import create_local_db
 from utils.timeutil import utc_now_str
 from db import access_rule
-from config.constants import (
-    STATUS_NEUTRAL, STATUS_IN_USE, STATUS_OFFLINE
-)
 
 logger = logging.getLogger("local_db")
 
@@ -200,6 +196,3 @@ class LocalDB:
             self.conn.commit()
             return True
         return False
-
-    def close(self):
-        self.conn.close()

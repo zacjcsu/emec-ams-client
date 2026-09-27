@@ -1,40 +1,18 @@
-import os
 import time
 import socket
-import subprocess
 import logging
 from config.constants import (
-    LCD_MESSAGES,
-    STATUS_MAINTENANCE,
-    STATUS_NEUTRAL,
-    MACHINE_ID,
-    MACHINE_NAME,
-    MACHINE_TYPE,
-    LCD_LINE_DELAY,
-    DB_ENV,
-    DEVICE_ID as device_id
+    LCD_MESSAGES, STATUS_MAINTENANCE, STATUS_NEUTRAL, MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, LCD_LINE_DELAY, DB_ENV,
+    DEVICE_ID,
 )
 from db.server_sync import sync_local_from_server, push_machine_status
 
 
 logger = logging.getLogger("startup")
 
-def check_internet():
-    try:
-        return socket.gethostbyname("google.com")
-    except:
-        return False
-
-def get_public_ip():
-    try:
-        result = subprocess.check_output("curl -s ifconfig.me", shell=True)
-        return result.decode().strip()
-    except:
-        return "0.0.0.0"
 
 def get_local_ip():
-    """The address this Pi uses to reach the server: what the dashboard must call for /ping and
-    /restart. (The public address is a shared NAT address the server cannot reach.)"""
+    """The address this Pi uses to reach the server, shown in the dashboard's Edit dialog."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect((DB_ENV["host"], DB_ENV["port"]))  # UDP: sends nothing, just picks the route
@@ -42,17 +20,10 @@ def get_local_ip():
     except Exception:
         return None
 
+
 def startup_sequence(lcd, db):
     logger.info("[STEP] Starting system checks...")
-
-    if not check_internet():
-        lcd.display("\n".join(LCD_MESSAGES["internet_error"]), color="red")
-        logger.error("[FAIL] No Internet")
-        return False
-
-    logger.info("[PASS] Internet check passed.")
-    logger.info(f"[PASS] Public IP: {get_public_ip()}")
-    device_ip = get_local_ip() or get_public_ip()
+    device_ip = get_local_ip()
     logger.info(f"[PASS] Device IP (reported to dashboard): {device_ip}")
 
     try:
@@ -60,7 +31,7 @@ def startup_sequence(lcd, db):
         sync_local_from_server()
         logger.info("[PASS] Server sync complete.")
     except Exception as e:
-        lcd.display("\n".join(LCD_MESSAGES["db_error"]), color="red")
+        lcd.display(*LCD_MESSAGES["db_error"], color="red")
         logger.error(f"[ERROR] Server sync failed: {e}")
         return False
 
@@ -73,19 +44,16 @@ def startup_sequence(lcd, db):
 
     machine = db.get_machine(MACHINE_ID)
     if machine["machine_status"] == STATUS_MAINTENANCE:
-        lcd.display("\n".join(LCD_MESSAGES["maintenance"]), color="yellow")
+        lcd.display(*LCD_MESSAGES["maintenance"], color="yellow")
         logger.warning("[HALT] Machine in maintenance mode.")
         return False
 
     db.update_machine_status(MACHINE_ID, STATUS_NEUTRAL)
     db.update_machine_heartbeat(MACHINE_ID)
-    db.update_machine_device(MACHINE_ID, device_id)
-    logger.info(f"[PASS] Machine {MACHINE_ID} status updated to neutral.")
-    logger.info(f"[PASS] Machine heartbeat updated.")
-
+    db.update_machine_device(MACHINE_ID, DEVICE_ID)
     db.update_machine_ip(MACHINE_ID, device_ip)
     push_machine_status(db, MACHINE_ID)
-    logger.info(f"[PASS] Machine Status updated")
+    logger.info(f"[PASS] Machine {MACHINE_ID} is neutral, heartbeat and address updated.")
 
     lcd.display(*LCD_MESSAGES["start"])
     time.sleep(2)

@@ -71,11 +71,6 @@ RESTART_POLL_SECONDS = 5         # how often machine.restart_requested_at is che
 CARD_REPORT_SECONDS = 2          # temp cards: presence report and job poll interval while a card rests on the reader
 CARD_REPORT_MAX_AGE = 3          # ...and presence stops being reported if the main loop has not refreshed it this recently
 
-# === Required Settings from system_settings table ===
-REQUIRED_SYSTEM_SETTINGS = [
-    "grace_period_seconds"
-]
-
 # === Machine Status Enum ===
 STATUS_MAINTENANCE = "maintenance"
 STATUS_OFFLINE = "offline"
@@ -86,10 +81,8 @@ STATUS_IN_USE = "in use"
 LCD_MESSAGES = {
     "start": ["All Clear.", "Welcome to EMEC!"],
     "startup_next": ["Scan CSU ID", "to start"],
-    "maintenance": [f"{MACHINE_NAME}", "Out of order"],
-    "internet_error": ["No Internet", "Connection"],
+    "maintenance": [MACHINE_NAME, "Out of order"],
     "db_error": ["Server Error", "Check conn."],
-    "sync_error": ["Sync failed", "Check conn."]
 }
 
 

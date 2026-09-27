@@ -4,12 +4,19 @@ All timestamps written to the server are naive UTC strings, as the server stores
 """
 import sqlite3
 import logging
+from contextlib import closing
 import psycopg
 from psycopg.rows import dict_row
 from config.constants import DB_ENV, LOCAL_DB_PATH, MACHINE_ID
-from utils.timeutil import utc_now_str
 
 logger = logging.getLogger("server_sync")
+
+
+def _local():
+    """A connection to the local cache, closed when the `with` block ends."""
+    conn = sqlite3.connect(LOCAL_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return closing(conn)
 
 
 def get_server_connection(timeout=10):
@@ -100,21 +107,17 @@ def sync_local_from_server():
     finally:
         conn_pg.close()
 
-    conn_local = sqlite3.connect(LOCAL_DB_PATH)
-    try:
-        with conn_local:  # one transaction: commit on success, roll back on error
-            for table, rows in pulled.items():
-                conn_local.execute(f"DELETE FROM {table}")
-                if rows:
-                    keys = list(rows[0].keys())
-                    placeholders = ", ".join(["?"] * len(keys))
-                    conn_local.executemany(
-                        f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({placeholders})",
-                        [tuple(r[k] for k in keys) for r in rows],
-                    )
-                logger.info(f"[SYNC] Pulled {len(rows)} rows from server -> {table}")
-    finally:
-        conn_local.close()
+    with _local() as conn_local, conn_local:  # one transaction: commit on success, roll back on error
+        for table, rows in pulled.items():
+            conn_local.execute(f"DELETE FROM {table}")
+            if rows:
+                keys = list(rows[0].keys())
+                placeholders = ", ".join(["?"] * len(keys))
+                conn_local.executemany(
+                    f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({placeholders})",
+                    [tuple(r[k] for k in keys) for r in rows],
+                )
+            logger.info(f"[SYNC] Pulled {len(rows)} rows from server -> {table}")
 
 
 def remote_access_decision(csu_id, machine_id):
@@ -156,11 +159,9 @@ def _upsert_session(cur_pg, row):
 
 
 def _local_session_row(session_id):
-    conn_local = sqlite3.connect(LOCAL_DB_PATH)
-    try:
-        return conn_local.execute(f"SELECT {_SESSION_COLS} FROM Machine_Usage WHERE session_id = ?", (session_id,)).fetchone()
-    finally:
-        conn_local.close()
+    with _local() as conn_local:
+        row = conn_local.execute(f"SELECT {_SESSION_COLS} FROM Machine_Usage WHERE session_id = ?", (session_id,)).fetchone()
+    return tuple(row) if row else None
 
 
 def push_session_start(session_id):
@@ -188,10 +189,8 @@ def sync_session_to_server(session_id):
             with conn.cursor() as cur_pg:
                 _upsert_session(cur_pg, row)
 
-        conn_local = sqlite3.connect(LOCAL_DB_PATH)
-        conn_local.execute("DELETE FROM Machine_Usage WHERE session_id = ?", (session_id,))
-        conn_local.commit()
-        conn_local.close()
+        with _local() as conn_local, conn_local:
+            conn_local.execute("DELETE FROM Machine_Usage WHERE session_id = ?", (session_id,))
         logger.info(f"[SYNC] Session {session_id} synced and removed locally.")
     except Exception as e:
         logger.error(f"[SYNC] Session sync failed: {e}")
@@ -256,24 +255,16 @@ def push_user_status(db, csu_id):
 
 
 def push_user_update(csu_id):
+    """Send the card UID recorded locally for this user."""
     try:
-        conn_local = sqlite3.connect(LOCAL_DB_PATH)
-        conn_local.row_factory = sqlite3.Row
-        cur = conn_local.cursor()
-        cur.execute("SELECT csu_id, uid, name, last_used, is_active FROM Users WHERE csu_id = ?", (csu_id,))
-        row = cur.fetchone()
-        conn_local.close()
-
+        with _local() as conn_local:
+            row = conn_local.execute("SELECT uid FROM Users WHERE csu_id = ?", (csu_id,)).fetchone()
         if not row:
             logger.warning(f"[SYNC] No local user found with CSU ID {csu_id}")
             return
-
         with get_server_connection() as conn:
-            conn.execute(
-                "UPDATE users SET uid = %s WHERE csu_id = %s",
-                (row["uid"], str(row["csu_id"])),
-            )
-        logger.info(f"[SYNC] UID and info pushed for {csu_id}")
+            conn.execute("UPDATE users SET uid = %s WHERE csu_id = %s", (row["uid"], str(csu_id)))
+        logger.info(f"[SYNC] UID pushed for {csu_id}")
     except Exception as e:
         logger.error(f"[SYNC] Failed to push user update for {csu_id}: {e}")
 
@@ -282,13 +273,10 @@ def push_access_requests():
     """Send this machine's locally raised requests to the server. The server assigns request_id
     (local ids would collide across Pis), and a request already under review is not duplicated."""
     try:
-        conn_local = sqlite3.connect(LOCAL_DB_PATH)
-        cur = conn_local.cursor()
-        cur.execute(
-            "SELECT uid, csu_id, machine_id, machine_type, requested_on FROM Access_Requests "
-            "WHERE status = 'under review' AND machine_id = ?", (MACHINE_ID,))
-        requests = cur.fetchall()
-        conn_local.close()
+        with _local() as conn_local:
+            requests = conn_local.execute(
+                "SELECT uid, csu_id, machine_id, machine_type, requested_on FROM Access_Requests "
+                "WHERE status = 'under review' AND machine_id = ?", (MACHINE_ID,)).fetchall()
         if not requests:
             return
 

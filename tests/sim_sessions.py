@@ -73,7 +73,10 @@ sm.time = CLOCK
 for f in ("push_session_start", "sync_session_to_server", "push_user_status", "push_machine_status"):
     setattr(sm, f, (lambda name: (lambda *a, **k: ev("server", name)))(f))
 import relay.kinds as kinds
+import rfid.reader
 kinds.time = CLOCK
+rfid.reader.time = CLOCK
+Reader.wait_until_removed = rfid.reader.RFIDReader.wait_until_removed
 
 STUDENT = NS(uid_hex="AAAA0001", csu_id="830000001", uid_num=1)
 OTHER = NS(uid_hex="BBBB0002", csu_id="830000002", uid_num=2)

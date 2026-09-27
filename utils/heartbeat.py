@@ -19,7 +19,7 @@ class HeartbeatMonitor:
       written: status stays whatever the Pi or the dashboard (maintenance) last set.
     * restart: if machine.restart_requested_at is later than when this process started, restart the
       app. Comparing to the start time (both on the server clock) means a request is honoured once
-      and never loops. Skipped, with a periodic re-check, while that column does not exist yet.
+      and never loops.
     """
 
     def __init__(self, machine_id):
@@ -34,25 +34,15 @@ class HeartbeatMonitor:
     def stop(self):
         self._stop.set()
 
-    @staticmethod
-    def _has_restart_column(conn):
-        return conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = 'machine' AND column_name = 'restart_requested_at'"
-        ).fetchone() is not None
-
     def _run(self):
         conn = None
         failing = False
         last_beat = None
-        restart_ok = False
-        next_schema_check = 0.0
         while not self._stop.is_set():
             try:
                 if conn is None or conn.closed:
                     conn = get_server_connection(timeout=3)
                     conn.autocommit = True
-                    next_schema_check = 0.0
                     if self._started_at is None:
                         self._started_at = conn.execute(f"SELECT {UTC_NOW} AS t").fetchone()["t"]
                 now = time.monotonic()
@@ -63,23 +53,15 @@ class HeartbeatMonitor:
                         (self.machine_id,))
                     last_beat = now
 
-                if not restart_ok and now >= next_schema_check:
-                    restart_ok = self._has_restart_column(conn)
-                    next_schema_check = now + 60
-                    if not restart_ok:
-                        logger.info("[HEARTBEAT] machine.restart_requested_at not found; "
-                                    "remote restart is off until the server adds it.")
-
-                if restart_ok:
-                    row = conn.execute(
-                        "SELECT restart_requested_at AS r FROM machine WHERE machine_id = %s",
-                        (self.machine_id,)).fetchone()
-                    if row and row["r"] and row["r"] > self._started_at:
-                        logger.warning(f"[HEARTBEAT] Restart requested at {row['r']}; restarting.")
-                        # SIGTERM runs main.py's exit handler (relay off, session closed); systemd's
-                        # Restart=always brings the app back.
-                        os.kill(os.getpid(), signal.SIGTERM)
-                        return
+                row = conn.execute(
+                    "SELECT restart_requested_at AS r FROM machine WHERE machine_id = %s",
+                    (self.machine_id,)).fetchone()
+                if row and row["r"] and row["r"] > self._started_at:
+                    logger.warning(f"[HEARTBEAT] Restart requested at {row['r']}; restarting.")
+                    # SIGTERM runs main.py's exit handler (relay off, session closed); systemd's
+                    # Restart=always brings the app back.
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
                 if failing:
                     logger.info("[HEARTBEAT] Server reachable again.")
                     failing = False

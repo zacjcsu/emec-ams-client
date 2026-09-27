@@ -1,11 +1,9 @@
 import sqlite3
 import os
 import logging
+from config.constants import LOCAL_DB_PATH
 
 logger = logging.getLogger("create_local_db")
-
-DB_PATH = "data/local.db"
-os.makedirs("data", exist_ok=True)
 
 schema = """
 -- USERS
@@ -97,7 +95,8 @@ CREATE TABLE IF NOT EXISTS Machine_Usage (
     machine_type TEXT,
     start_time TEXT,
     end_time TEXT,
-    duration INTEGER
+    duration INTEGER,
+    card_uid TEXT
 );
 
 -- LAST SESSION on this machine (one row, refreshed by the sync; drives the idle "Last Used" screen)
@@ -118,23 +117,9 @@ CREATE TABLE IF NOT EXISTS System_Settings (
 """
 
 def create_local_db():
-    """Create missing tables and bring an older cache up to date. Safe to run every start: the
-    synced tables are a cache, and Machine_Usage / Access_Requests are never dropped."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.executescript(schema)
-    cols = [r[1] for r in cur.execute("PRAGMA table_info(Access_Levels)")]
-    if "enabled" not in cols:
-        cur.execute("ALTER TABLE Access_Levels ADD COLUMN enabled INTEGER DEFAULT 1")
-    # Replaced by Category_Permissions when permissions moved from machines to categories.
-    cur.execute("DROP TABLE IF EXISTS Machine_Permissions")
-    user_cols = [r[1] for r in cur.execute("PRAGMA table_info(Users)")]
-    for col in ("disabled_at", "disabled_line1", "disabled_line2"):
-        if col not in user_cols:
-            cur.execute(f"ALTER TABLE Users ADD COLUMN {col} TEXT")
-    usage_cols = [r[1] for r in cur.execute("PRAGMA table_info(Machine_Usage)")]
-    if "card_uid" not in usage_cols:
-        cur.execute("ALTER TABLE Machine_Usage ADD COLUMN card_uid TEXT")
-    conn.commit()
+    """Create missing tables. Safe to run every start: Machine_Usage and Access_Requests are never dropped."""
+    os.makedirs(os.path.dirname(LOCAL_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(LOCAL_DB_PATH)
+    conn.executescript(schema)
     conn.close()
-    logger.info(f"Local DB ready at {DB_PATH}")
+    logger.info(f"Local DB ready at {LOCAL_DB_PATH}")

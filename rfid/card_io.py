@@ -10,6 +10,7 @@ ACCESS = [0xFF, 0x07, 0x80, 0x69]   # transport-default access bytes + user byte
 
 
 def uid_hex(uid):
+    """The card UID as the server stores it: the first 4 bytes, upper-case hex."""
     return "".join("%02X" % b for b in uid[:4])
 
 

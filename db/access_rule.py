@@ -4,7 +4,7 @@ against the server's reference cases.
 
 Rule order, first match wins: unknown_user, user_disabled, group_disabled, no_permission, lab_hours, level, outside_hours.
 """
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 DEFAULT_TZ = "America/Denver"

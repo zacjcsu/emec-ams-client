@@ -106,7 +106,7 @@ class LockoutMonitor:
         except psycopg.OperationalError:
             raise
         except psycopg.Error as e:
-            # e.g. the dashboard's migration isn't applied yet. The lockout checks above must carry on regardless.
+            # A broken message must not stop the access check below, so it is logged once and skipped.
             if not self._message_failing:
                 logger.warning(f"[LOCKOUT] Cannot read the maintenance message: {e}")
                 self._message_failing = True

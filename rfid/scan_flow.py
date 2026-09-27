@@ -28,7 +28,6 @@ REJECT_TEXT = {
 }
 
 LOOKUP_TTL = 2.0      # seconds a lookup result is reused for a card that stays on the reader
-RECHECK_SECONDS = 2.0   # how often a held "user disabled" message asks the server if the user was re-enabled
 MISSES_TO_REMOVE = 3  # polls with no card before it counts as removed (debounce)
 
 
@@ -73,19 +72,8 @@ class ScanFlow:
             self.activity.set_present(None)
 
     def _hold_until_removed(self, recheck=None):
-        """Block until the card has left the reader (debounced), leaving whatever is on the LCD untouched.
-        If `recheck` is given it is called every RECHECK_SECONDS; when it returns True, stop and return True
-        (the caller carries on with the card still there). Returns False when the card was removed."""
-        misses = 0
-        last = time.monotonic()
-        while misses < MISSES_TO_REMOVE:
-            misses = misses + 1 if self.reader.read_card_ex() is None else 0
-            time.sleep(0.3)
-            if recheck and misses == 0 and time.monotonic() - last >= RECHECK_SECONDS:
-                last = time.monotonic()
-                if recheck():
-                    return True
-        return False
+        """Hold a refusal on the LCD until the card leaves. True if `recheck` said access came back first."""
+        return self.reader.wait_until_removed(poll=0.3, recheck=recheck)
 
     def process(self, scan):
         """Handle a card on the reader. Returns a SessionStart if the card started a session, else None
@@ -254,13 +242,6 @@ class ScanFlow:
         else:
             self.lcd.display("Write failed", str(detail or "")[:16], color="red")
         # The card stays on the reader after programming; do not let it start a session until it is removed.
-        self._wait_for_removal(max_seconds=60)
+        self.reader.wait_until_removed(max_seconds=60)
         self._reset_arrival(None)
         self.lcd.display(*LCD_MESSAGES["startup_next"])
-
-    def _wait_for_removal(self, max_seconds):
-        end = time.time() + max_seconds
-        misses = 0
-        while time.time() < end and misses < MISSES_TO_REMOVE:
-            misses = misses + 1 if self.reader.read_card_ex() is None else 0
-            time.sleep(0.5)

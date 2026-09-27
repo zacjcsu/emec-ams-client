@@ -1,6 +1,5 @@
 import RPi.GPIO as GPIO
 from config.constants import RELAY_PIN
-import time
 
 class RelayController:
     def __init__(self):
