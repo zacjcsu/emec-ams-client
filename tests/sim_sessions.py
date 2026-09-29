@@ -55,23 +55,27 @@ class Lockout:
     """events: list of (time, attr, value) applied as the clock passes them."""
     def __init__(self, events):
         self.events = sorted(events, key=lambda e: e[0])
-        self._state = {"estop_active": False, "maintenance_active": False, "revoked_reason": None, "revoked_via": None}
+        self._state = {"estop_active": False, "maintenance_active": False, "revoked_reason": None, "revoked_via": None,
+                       "cardless_stop": None}
         self.bypass_maintenance = False
     def _apply(self):
         while self.events and self.events[0][0] <= CLOCK.t:
             _, k, v = self.events.pop(0); self._state[k] = v
     def __getattr__(self, name):
-        if name in ("estop_active", "maintenance_active", "revoked_reason", "revoked_via"):
+        if name in ("estop_active", "maintenance_active", "revoked_reason", "revoked_via", "cardless_stop"):
             self._apply(); return self._state[name]
         raise AttributeError(name)
     def watch(self, csu, card=None, bypass_maintenance=False):
         self.bypass_maintenance = bool(bypass_maintenance and card); ev("watch", csu, card, self.bypass_maintenance)
+    def watch_cardless(self, cardless_id):
+        self.bypass_maintenance = True; ev("watch_cardless", cardless_id)
     def unwatch(self): self.bypass_maintenance = False; ev("unwatch")
 
 import relay.session_manager as sm
 sm.time = CLOCK
 for f in ("push_session_start", "sync_session_to_server", "push_user_status", "push_machine_status"):
     setattr(sm, f, (lambda name: (lambda *a, **k: ev("server", name)))(f))
+sm.cardless_finish = lambda cardless_id, reason: ev("server", "cardless_finish", cardless_id, reason)
 import relay.kinds as kinds
 import rfid.reader
 kinds.time = CLOCK
@@ -101,6 +105,15 @@ SCENARIOS = {
     "temp card, other card": dict(reader=[(0, TEMP), (6, JUNK)], temp=True),
     "temp card lost": dict(reader=[(0, TEMP)], lockout=[(8, "revoked_reason", "card_lost")], temp=True),
     "bypass keeps running in maintenance": dict(reader=[(0, TEMP), (15, None)], lockout=[(5, "maintenance_active", True)], temp=True, bypass=True),
+    # cardless access: reader=None means the reader is empty at the start
+    "cardless, time runs out": dict(cardless=150, reader=[(0, None)]),
+    "cardless, card read": dict(cardless=None, reader=[(0, None), (8, STUDENT)]),
+    "cardless, card already on the reader": dict(cardless=None, reader=[(0, JUNK), (5, None), (6, JUNK), (7, None), (12, STUDENT)]),
+    "cardless, stopped from the dashboard": dict(cardless=600, reader=[(0, None)], lockout=[(6, "cardless_stop", "stop")]),
+    "cardless, server says time is up": dict(cardless=600, reader=[(0, None)], lockout=[(6, "cardless_stop", "time_up")]),
+    "cardless runs in maintenance": dict(cardless=20, reader=[(0, None)], lockout=[(3, "maintenance_active", True)]),
+    "cardless, emergency shutdown": dict(cardless=None, reader=[(0, None)], lockout=[(5, "estop_active", True)]),
+    "cardless for a person": dict(cardless=30, csu_id="830000001", reader=[(0, None)]),
 }
 
 for name, sc in SCENARIOS.items():
@@ -108,10 +121,16 @@ for name, sc in SCENARIOS.items():
     TRACE.append(f"=== {name}")
     lockout = Lockout(sc.get("lockout", []))
     session = sm.SessionManager(DB(), LCD(), Relay(), lockout)
-    card = sc["reader"][0][1]
-    temp = sc.get("temp", False)
-    session.start_session(card.csu_id or "830000009", "Test User", card.uid_hex, temp, sc.get("bypass", False))
-    ended = kinds.load_kind(sc.get("kind", "attended")).run(session, Reader(sc["reader"]))
+    kind = kinds.load_kind(sc.get("kind", "attended"))
+    if "cardless" in sc:
+        session.start_session(sc.get("csu_id"), "Test User" if sc.get("csu_id") else "Cardless access",
+                              session_id="cardless-session", cardless_id=7)
+        ended = kind.run_cardless(session, Reader(sc["reader"]), sc["cardless"])
+    else:
+        card = sc["reader"][0][1]
+        temp = sc.get("temp", False)
+        session.start_session(card.csu_id or "830000009", "Test User", card.uid_hex, temp, sc.get("bypass", False))
+        ended = kind.run(session, Reader(sc["reader"]))
     ev("ended", ended, "session", session.active_session_id is not None)
 
 trace = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27}", "<session>", "\n".join(TRACE)) + "\n"

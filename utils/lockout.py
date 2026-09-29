@@ -2,10 +2,10 @@ import logging
 import threading
 import time
 import psycopg
-from db.server_sync import get_server_connection
+from db.server_sync import get_server_connection, cardless_claim, cardless_check
 from config.constants import (
     EMERGENCY_POLL_SECONDS, ENFORCE_ACCESS_DURING_SESSION, ACCESS_RECHECK_SECONDS, MACHINE_ID,
-    STATUS_MAINTENANCE,
+    STATUS_MAINTENANCE, CARDLESS_START_SECONDS,
 )
 
 logger = logging.getLogger("lockout")
@@ -26,6 +26,9 @@ class LockoutMonitor:
       the server's access_decision_machine() is asked about them every ACCESS_RECHECK_SECONDS. If they
       no longer have access (lab closed, group disabled, permission revoked) `revoked_reason` is set for the
       session loop to end the session, and the relay is cut if the machine's kind says to.
+    * Cardless access (dashboard migration 043): while idle, a request started from the dashboard is claimed
+      and waits for the main loop (take_cardless()). While one runs (watch_cardless()), maintenance doesn't
+      stop it, and `cardless_stop` is set when the dashboard stops it or its time is up.
     * Message: what the dashboard wants on this machine's screen, from machine_message() (dashboard migration
       028), as `message` (line1, line2), or None. That's the open maintenance record's two lines, or else
       "Service due" for a due service task. It's separate from the lock, so a running machine can have one.
@@ -47,6 +50,9 @@ class LockoutMonitor:
         self._watched = None  # csu_id of the user on the machine
         self._watched_card = None  # UID of the temporary card they signed in with, if any
         self.bypass_maintenance = False  # the watched session may run while this machine is in maintenance
+        self._cardless = None  # id of the cardless session running now
+        self._cardless_job = None  # (id, monotonic time) of a claimed request the main loop hasn't started
+        self.cardless_stop = None  # 'stop' or 'time_up' from the server for the running cardless session
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="lockout-monitor", daemon=True)
@@ -76,7 +82,30 @@ class LockoutMonitor:
             self.revoked_reason = None
             self.revoked_via = None
             self.bypass_maintenance = False
+            self._cardless = None
+            self.cardless_stop = None
         self.relay.set_lockout(self._relay_should_lock())
+
+    def watch_cardless(self, cardless_id):
+        """Start watching a cardless session. It runs during maintenance and has no user to check."""
+        with self._lock:
+            self._watched = None
+            self._watched_card = None
+            self.revoked_reason = None
+            self.revoked_via = None
+            self._cardless = cardless_id
+            self.cardless_stop = None
+            self.bypass_maintenance = True
+        self.relay.set_lockout(self._relay_should_lock())
+
+    def take_cardless(self):
+        """A claimed cardless request for the main loop to start, or None. One the loop was too busy to start
+        in time is dropped, and the dashboard marks it failed."""
+        with self._lock:
+            job, self._cardless_job = self._cardless_job, None
+        if job and time.monotonic() - job[1] <= CARDLESS_START_SECONDS:
+            return job[0]
+        return None
 
     def _relay_should_lock(self):
         return self.estop_active or (self.maintenance_active and not self.bypass_maintenance)
@@ -164,6 +193,19 @@ class LockoutMonitor:
 
                 with self._lock:
                     watched, watched_card = self._watched, self._watched_card
+                    cardless, job = self._cardless, self._cardless_job
+                if cardless:
+                    state = cardless_check(cardless, conn)
+                    if state != "running":
+                        with self._lock:
+                            if self._cardless == cardless:
+                                self.cardless_stop = state
+                elif not watched and not job and not self.estop_active:
+                    claimed = cardless_claim(self.machine_id, conn)
+                    if claimed:
+                        logger.info(f"[LOCKOUT] Claimed cardless access {claimed}")
+                        with self._lock:
+                            self._cardless_job = (claimed, time.monotonic())
                 if (ENFORCE_ACCESS_DURING_SESSION and watched
                         and time.monotonic() - last_access_check >= ACCESS_RECHECK_SECONDS):
                     self._check_access(conn, watched, watched_card)

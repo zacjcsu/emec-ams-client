@@ -482,3 +482,176 @@
    29.0 unwatch
    29.0 relay off
    29.0 ended timeout session False
+=== cardless, time runs out
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' '3m left' green
+   30.0 lcd 'Cardless access' '2m left' green
+   90.0 lcd 'Cardless access' '1m left' green
+  150.0 lcd 'Time is up' 'Session ended' red
+  152.0 db end_session cardless-session
+  152.0 db update_machine_status unknown
+  152.0 db update_machine_heartbeat unknown
+  152.0 server push_machine_status
+  152.0 server sync_session_to_server
+  152.0 server cardless_finish 7 time_up
+  152.0 unwatch
+  152.0 relay off
+  152.0 ended time_up session False
+=== cardless, card read
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' 'Until card read' green
+    8.0 db end_session cardless-session
+    8.0 db update_machine_status unknown
+    8.0 db update_machine_heartbeat unknown
+    8.0 server push_machine_status
+    8.0 server sync_session_to_server
+    8.0 server cardless_finish 7 card
+    8.0 unwatch
+    8.0 relay off
+    8.0 ended card session False
+=== cardless, card already on the reader
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' 'Until card read' green
+   12.0 db end_session cardless-session
+   12.0 db update_machine_status unknown
+   12.0 db update_machine_heartbeat unknown
+   12.0 server push_machine_status
+   12.0 server sync_session_to_server
+   12.0 server cardless_finish 7 card
+   12.0 unwatch
+   12.0 relay off
+   12.0 ended card session False
+=== cardless, stopped from the dashboard
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' '10m left' green
+    6.0 lcd 'Stopped from' 'the dashboard' red
+    8.0 db end_session cardless-session
+    8.0 db update_machine_status unknown
+    8.0 db update_machine_heartbeat unknown
+    8.0 server push_machine_status
+    8.0 server sync_session_to_server
+    8.0 server cardless_finish 7 stopped
+    8.0 unwatch
+    8.0 relay off
+    8.0 ended stopped session False
+=== cardless, server says time is up
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' '10m left' green
+    6.0 lcd 'Time is up' 'Session ended' red
+    8.0 db end_session cardless-session
+    8.0 db update_machine_status unknown
+    8.0 db update_machine_heartbeat unknown
+    8.0 server push_machine_status
+    8.0 server sync_session_to_server
+    8.0 server cardless_finish 7 time_up
+    8.0 unwatch
+    8.0 relay off
+    8.0 ended time_up session False
+=== cardless runs in maintenance
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' '1m left' green
+   20.0 lcd 'Time is up' 'Session ended' red
+   22.0 db end_session cardless-session
+   22.0 db update_machine_status unknown
+   22.0 db update_machine_heartbeat unknown
+   22.0 server push_machine_status
+   22.0 server sync_session_to_server
+   22.0 server cardless_finish 7 time_up
+   22.0 unwatch
+   22.0 relay off
+   22.0 ended time_up session False
+=== cardless, emergency shutdown
+    0.0 unwatch
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Cardless access' 'Cardless' green
+    0.0 lcd 'Cardless access' 'Until card read' green
+    5.0 lcd 'EMERGENCY' 'SHUTDOWN' red
+    7.0 db end_session cardless-session
+    7.0 db update_machine_status unknown
+    7.0 db update_machine_heartbeat unknown
+    7.0 server push_machine_status
+    7.0 server sync_session_to_server
+    7.0 server cardless_finish 7 estop
+    7.0 lcd 'Session' 'ended' red
+    8.0 unwatch
+    8.0 relay off
+    8.0 ended estop session False
+=== cardless for a person
+    0.0 unwatch
+    0.0 db mark_user_active 830000001
+    0.0 db insert_session cardless-session
+    0.0 server push_session_start
+    0.0 watch_cardless 7
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'Cardless' green
+    0.0 lcd 'Test User' '1m left' green
+   30.0 lcd 'Time is up' 'Session ended' red
+   32.0 db end_session cardless-session
+   32.0 db mark_user_inactive 830000001
+   32.0 db update_machine_status unknown
+   32.0 db update_machine_heartbeat unknown
+   32.0 server push_user_status
+   32.0 server push_machine_status
+   32.0 server sync_session_to_server
+   32.0 server cardless_finish 7 time_up
+   32.0 unwatch
+   32.0 relay off
+   32.0 ended time_up session False

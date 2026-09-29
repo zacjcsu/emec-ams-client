@@ -374,3 +374,37 @@ def temp_card_finish(issue_id, ok, detail=None, conn=None):
     except Exception as e:
         logger.error(f"[TEMP] temp_card_finish failed: {e}")
         return None
+
+
+# Cardless access (dashboard migration 043): staff start a session from the dashboard, with no card.
+
+def cardless_claim(machine_id, conn=None):
+    """The id of a cardless request for this machine, now claimed, or None."""
+    row = _with_conn(conn, lambda c: c.execute("SELECT cardless_claim(%s::text) AS id", (machine_id,)).fetchone())
+    return row["id"] if row else None
+
+
+def cardless_begin(cardless_id):
+    """dict(ok, session_id, csu_id, name, seconds) as the session starts, or None if the server is unreachable.
+    seconds is None for no time limit."""
+    try:
+        row = _with_conn(None, lambda c: c.execute(
+            "SELECT ok, session_id, csu_id, name, seconds FROM cardless_begin(%s::bigint)", (cardless_id,)).fetchone())
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"[CARDLESS] cardless_begin failed: {e}")
+        return None
+
+
+def cardless_check(cardless_id, conn=None):
+    """'running', 'time_up' or 'stop'."""
+    row = _with_conn(conn, lambda c: c.execute("SELECT cardless_check(%s::bigint) AS s", (cardless_id,)).fetchone())
+    return row["s"] if row else "stop"
+
+
+def cardless_finish(cardless_id, reason):
+    try:
+        _with_conn(None, lambda c: c.execute("SELECT cardless_finish(%s::bigint, %s::text)", (cardless_id, reason)))
+    except Exception as e:
+        # The dashboard also ends it once the usage row is closed.
+        logger.error(f"[CARDLESS] cardless_finish failed: {e}")

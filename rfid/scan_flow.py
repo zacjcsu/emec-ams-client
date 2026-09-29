@@ -35,6 +35,7 @@ class SessionStart:
     def __init__(self, csu_id, display_name, card_uid, temp, bypass=False):
         self.csu_id, self.display_name, self.card_uid, self.temp = csu_id, display_name, card_uid, temp
         self.bypass = bypass   # may run while this machine is in maintenance
+        self.cardless_id = self.session_id = self.seconds = None   # set for cardless access from the dashboard
 
 
 class ScanFlow:

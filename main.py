@@ -3,7 +3,7 @@
 from utils import hardware_stubs  # noqa: F401  (must be imported first, see utils/hardware_stubs.py)
 from utils.startup_check import startup_sequence
 from rfid.reader import RFIDReader
-from rfid.scan_flow import ScanFlow
+from rfid.scan_flow import ScanFlow, SessionStart
 from utils.card_activity import CardActivity
 from relay.session_manager import SessionManager, recover_orphaned_sessions, QUIET_END_REASONS
 from relay.kinds import load_kind
@@ -18,7 +18,7 @@ import signal
 import sys
 from db.local_db import LocalDB
 from config.constants import CARD_POLL_INTERVAL, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE
-from db.server_sync import push_machine_status
+from db.server_sync import push_machine_status, cardless_begin
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
@@ -57,7 +57,7 @@ def exit_handler(sig, frame):
     relay.turn_off()
     # Close any open session so its usage is recorded (this is also how a dashboard restart lands).
     try:
-        session_mgr.force_end_session()
+        session_mgr.force_end_session(reason="restart")
     except Exception:
         logger.exception("[SHUTDOWN] Could not close the session.")
     lcd.display("Shutting down...")
@@ -71,6 +71,19 @@ def exit_handler(sig, frame):
 
 signal.signal(signal.SIGINT, exit_handler)
 signal.signal(signal.SIGTERM, exit_handler)
+
+def cardless_start():
+    """A cardless session from the dashboard to start now, or None."""
+    cardless_id = lockout.take_cardless()
+    if not cardless_id:
+        return None
+    row = cardless_begin(cardless_id)
+    if not row or not row["ok"]:
+        logger.info(f"[MAIN] Cardless access {cardless_id} was not started.")
+        return None
+    started = SessionStart(row["csu_id"], row["name"] or row["csu_id"] or "Cardless access", None, False)
+    started.cardless_id, started.session_id, started.seconds = cardless_id, row["session_id"], row["seconds"]
+    return started
 
 def main():
     # Before the heartbeat thread starts: its first beat would replace the previous run's last heartbeat,
@@ -105,6 +118,9 @@ def main():
                     idle.tick()
                     time.sleep(CARD_POLL_INTERVAL)
                     continue
+                started = cardless_start()
+                if started:
+                    break
                 if lockout.maintenance_active:
                     # Only a temp card issued to bypass maintenance on this machine can start a session.
                     scan = reader.read_card_ex()
@@ -137,15 +153,20 @@ def main():
                 time.sleep(CARD_POLL_INTERVAL)
 
             flow.session_started()
-            session_mgr.start_session(started.csu_id, started.display_name, started.card_uid, started.temp,
-                                      started.bypass)
-            ended = kind.run(session_mgr, reader)
+            if started.cardless_id:
+                session_mgr.start_session(started.csu_id, started.display_name, session_id=started.session_id,
+                                          cardless_id=started.cardless_id)
+                ended = kind.run_cardless(session_mgr, reader, started.seconds)
+            else:
+                session_mgr.start_session(started.csu_id, started.display_name, started.card_uid, started.temp,
+                                          started.bypass)
+                ended = kind.run(session_mgr, reader)
             skip_startup = ended in QUIET_END_REASONS
         except Exception:
             logger.exception("[MAIN] Unhandled error in main loop; recovering.")
             relay.turn_off()
             try:
-                session_mgr.force_end_session()
+                session_mgr.force_end_session(reason="error")
             except Exception:
                 logger.exception("[MAIN] Could not cleanly close the session.")
             time.sleep(5)

@@ -5,6 +5,7 @@ from config.constants import MACHINE_ID
 from datetime import datetime
 from db.server_sync import (
     sync_session_to_server, push_session_start, push_user_status, push_machine_status, fetch_last_heartbeat,
+    cardless_finish,
 )
 from utils.timeutil import TS_FORMAT
 from config.constants import (
@@ -53,6 +54,7 @@ class SessionManager:
         self.active_card_uid = None   # UID of the physical card that started the session
         self.active_temp = False      # True for a temporary card (recognised by UID, not by CSU ID)
         self.active_bypass = False    # a temp card that may run this machine during maintenance
+        self.active_cardless = None   # id of a cardless session started from the dashboard
         if self.lockout:
             self.lockout.unwatch()
 
@@ -69,18 +71,23 @@ class SessionManager:
             status = STATUS_MAINTENANCE
         self.db.update_machine_status(MACHINE_ID, status)
         self.db.update_machine_heartbeat(MACHINE_ID)
-        push_user_status(self.db, csu_id)
+        if csu_id:
+            push_user_status(self.db, csu_id)
         push_machine_status(self.db, MACHINE_ID)
 
-    def start_session(self, csu_id, display_name, card_uid=None, temp=False, bypass=False):
+    def start_session(self, csu_id, display_name, card_uid=None, temp=False, bypass=False,
+                      session_id=None, cardless_id=None):
+        """A cardless session passes the server's session_id and its cardless_id. Its csu_id may be None."""
         if not self.active_session_id:
-            self.active_session_id = str(uuid.uuid4())
+            self.active_session_id = session_id or str(uuid.uuid4())
             self.session_start_time = time.time()
-            self.db.mark_user_active(csu_id)
+            if csu_id:
+                self.db.mark_user_active(csu_id)
             self.db.insert_session(self.active_session_id, csu_id, MACHINE_ID, card_uid)
             push_session_start(self.active_session_id)     # the dashboard shows who is on the machine from now
             logger.info(f"[SESSION] Started: {display_name} ({csu_id}), session_id: {self.active_session_id}"
-                        + (f", TEMP card {card_uid}" if temp else ""))
+                        + (f", TEMP card {card_uid}" if temp else "")
+                        + (f", cardless {cardless_id}" if cardless_id else ""))
         else:
             logger.info("[SESSION] Resumed session within grace period.")
 
@@ -89,12 +96,17 @@ class SessionManager:
         self.active_card_uid = card_uid
         self.active_temp = temp
         self.active_bypass = bypass and temp
+        self.active_cardless = cardless_id
         if self.lockout:
-            self.lockout.watch(csu_id, card_uid if temp else None, bypass_maintenance=self.active_bypass)
+            if cardless_id:
+                self.lockout.watch_cardless(cardless_id)
+            else:
+                self.lockout.watch(csu_id, card_uid if temp else None, bypass_maintenance=self.active_bypass)
         self._sync_machine_status(STATUS_IN_USE, csu_id)
 
         self.relay.turn_on()
-        line2 = "in use MAINT" if self.active_bypass else "in use TEMP CARD" if temp else "in use"
+        line2 = ("Cardless" if cardless_id else "in use MAINT" if self.active_bypass
+                 else "in use TEMP CARD" if temp else "in use")
         self.show(display_name[:16], line2, color="green")
 
     def resume_session(self):
@@ -132,9 +144,10 @@ class SessionManager:
             self.force_end_session(quiet=True)
             return
         self.show(line1, line2, color="red", delay=LCD_LINE_DELAY)
-        self.force_end_session()
+        self.force_end_session(reason=reason)
 
-    def force_end_session(self, quiet=False):
+    def force_end_session(self, quiet=False, reason=None):
+        """`reason` is reported for a cardless session: time_up, card, stopped, estop, restart."""
         if not self.active_session_id:
             return
 
@@ -143,11 +156,15 @@ class SessionManager:
         duration_min = max(0, round(duration_sec / 60))
 
         self.db.end_session(self.active_session_id)
-        self.db.mark_user_inactive(self.active_csu_id)
+        if self.active_csu_id:
+            self.db.mark_user_inactive(self.active_csu_id)
         self._sync_machine_status(STATUS_NEUTRAL, self.active_csu_id)
 
         sync_session_to_server(self.active_session_id)
-        logger.info(f"[SESSION] Ended: {self.display_name} ({self.active_csu_id}), duration: {duration_min} min")
+        if self.active_cardless:
+            cardless_finish(self.active_cardless, reason or "ended")
+        logger.info(f"[SESSION] Ended: {self.display_name} ({self.active_csu_id}), duration: {duration_min} min"
+                    + (f", cardless {reason or 'ended'}" if self.active_cardless else ""))
 
         if not quiet:
             self.show("Session", "ended", color="red", delay=1)

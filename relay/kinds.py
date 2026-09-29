@@ -5,6 +5,7 @@ Starting and ending a session, the relay, status and screen messages stay in Ses
 An emergency shutdown or maintenance lock cuts the power for every kind (LockoutMonitor).
 """
 import logging
+import math
 import time
 
 from config.constants import CARD_GRACE_PERIOD_DEFAULT, LCD_LINE_DELAY, MACHINE_KIND
@@ -101,6 +102,52 @@ class Attended:
         session.force_end_session()
         logger.info("[SESSION] Ended after grace period.")
         return "timeout"
+
+    def run_cardless(self, session, reader, seconds):
+        """Watch a cardless session. It ends when its time is up (`seconds`, None for no limit), when the dashboard
+        stops it, or when a card is put on the reader. A card already there at the start counts once it has left.
+        Returns why it ended."""
+        deadline = None if seconds is None else time.monotonic() + seconds
+        absence_start = None
+        armed = False
+        shown = None
+        while True:
+            reason = session.lockout_reason()
+            if reason:
+                session.end_for_lockout(reason)
+                return reason
+            stop = session.lockout.cardless_stop if session.lockout else None
+            if stop == "time_up" or (deadline is not None and time.monotonic() >= deadline):
+                session.show("Time is up", "Session ended", color="red", delay=LCD_LINE_DELAY)
+                session.force_end_session(quiet=True, reason="time_up")
+                return "time_up"
+            if stop:
+                session.show("Stopped from", "the dashboard", color="red", delay=LCD_LINE_DELAY)
+                session.force_end_session(quiet=True, reason="stopped")
+                return "stopped"
+
+            if reader.read_card_ex() is None:
+                if absence_start is None:
+                    absence_start = time.monotonic()
+                elif time.monotonic() - absence_start >= self.CARD_GONE_SECONDS:
+                    armed = True
+            elif armed:
+                logger.info("[SESSION] Card read; cardless access ends.")
+                session.force_end_session(quiet=True, reason="card")
+                return "card"
+            else:
+                absence_start = None
+
+            line2 = "Until card read" if deadline is None else _time_left(deadline - time.monotonic())
+            if line2 != shown:
+                session.lcd.display(session.display_name[:16], line2, color="green")
+                shown = line2
+            time.sleep(0.5)
+
+
+def _time_left(seconds):
+    minutes = max(1, math.ceil(seconds / 60))
+    return f"{minutes // 60}h{minutes % 60:02d}m left" if minutes >= 60 else f"{minutes}m left"
 
 
 KINDS = {kind.name: kind for kind in (Attended,)}
