@@ -1,3 +1,4 @@
+import time
 from lcd.RGB1602 import RGB1602
 
 COLORS = {
@@ -12,8 +13,21 @@ COLORS = {
 class LCD:
     def __init__(self):
         self.lcd = RGB1602(16, 2)
+        self.needs_setup = False
 
     def display(self, line1="", line2="", color="white"):
+        try:
+            self._show(line1, line2, color)
+        except OSError:
+            # An I2C glitch can reset the screen chip. It comes back with the display off until it is set up again.
+            self.needs_setup = True
+        if self.needs_setup:
+            time.sleep(0.1)
+            self.lcd.begin(16, 2)
+            self.needs_setup = False
+            self._show(line1, line2, color)
+
+    def _show(self, line1, line2, color):
         self.lcd.setRGB(*COLORS.get(color, COLORS["white"]))
 
         self.lcd.clear()
