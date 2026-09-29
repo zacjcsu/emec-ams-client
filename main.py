@@ -17,7 +17,7 @@ import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import CARD_POLL_INTERVAL, MACHINE_ID, STATUS_OFFLINE
+from config.constants import CARD_POLL_INTERVAL, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE
 from db.server_sync import push_machine_status
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -61,10 +61,8 @@ def exit_handler(sig, frame):
     except Exception:
         logger.exception("[SHUTDOWN] Could not close the session.")
     lcd.display("Shutting down...")
-    if not lockout.maintenance_active:
-        # Maintenance is sticky until staff clears it from the dashboard; a shutdown must not report
-        # this machine as merely 'offline' and silently drop that flag.
-        db.update_machine_status(MACHINE_ID, STATUS_OFFLINE)
+    # The cached status can predate a maintenance lock, and the server refuses a push that would clear it.
+    db.update_machine_status(MACHINE_ID, STATUS_MAINTENANCE if lockout.maintenance_active else STATUS_OFFLINE)
     db.update_machine_heartbeat(MACHINE_ID)
     push_machine_status(db, MACHINE_ID)
     lcd.clear()
