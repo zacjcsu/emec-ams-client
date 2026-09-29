@@ -98,30 +98,34 @@ class ScanFlow:
 
     def process_maintenance(self, scan):
         """While this machine is in maintenance, only a temp card issued to bypass it here can start a session.
-        Anything else is ignored. Returns (SessionStart or None, whether the LCD was changed)."""
+        Any other card is only reported, so a temp card can still be written here.
+        Returns (SessionStart or None, whether the LCD was changed)."""
         self._misses = 0
         if scan.uid_hex != self._uid:
             self._reset_arrival(scan.uid_hex)
         if scan.csu_id is not None:
             self._refused(scan, scan.csu_id, "maintenance")
+            self.activity.set_present(scan.uid_hex, blank=False)
             return None, False
-        if self._denied:
-            return None, False
-        lk = self._cached_lookup(scan.uid_hex)
-        if not lk or not lk["ok"]:
+        drew = False
+        lk = None if self._denied else self._cached_lookup(scan.uid_hex)
+        if lk and lk["ok"]:
+            bypass = temp_card_maintenance_bypass(scan.uid_hex, MACHINE_ID)
+            if bypass:
+                logger.info(f"[TEMP] {scan.uid_hex} may bypass maintenance on {MACHINE_ID}")
+                started = self._temp_login(scan, lk)
+                if started:
+                    started.bypass = True
+                    return started, True
+                drew = True
+            else:
+                self._denied = bypass is False    # retry only if the server was unreachable
+                if self._denied:
+                    self._refused(scan, None, "maintenance")
+        elif not self._denied:
             self._refused(scan, None, lk["reason"] if lk else "server_offline")
-            return None, False
-        bypass = temp_card_maintenance_bypass(scan.uid_hex, MACHINE_ID)
-        if not bypass:
-            self._denied = bypass is False    # retry only if the server was unreachable
-            if self._denied:
-                self._refused(scan, None, "maintenance")
-            return None, False
-        logger.info(f"[TEMP] {scan.uid_hex} may bypass maintenance on {MACHINE_ID}")
-        started = self._temp_login(scan, lk)
-        if started:
-            started.bypass = True
-        return started, True
+        self._report_presence(scan)
+        return None, drew
 
     # ------------------------------------------------------------ not a student card
     def _cached_lookup(self, uid_hex):

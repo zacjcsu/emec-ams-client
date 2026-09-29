@@ -118,6 +118,11 @@ def main():
                     idle.tick()
                     time.sleep(CARD_POLL_INTERVAL)
                     continue
+                job = activity.take_job()
+                if job:
+                    flow.run_job(job)
+                    idle.reset()
+                    continue
                 started = cardless_start()
                 if started:
                     break
@@ -133,11 +138,6 @@ def main():
                         idle.reset()
                     idle.tick()
                     time.sleep(CARD_POLL_INTERVAL)
-                    continue
-                job = activity.take_job()
-                if job:
-                    flow.run_job(job)
-                    idle.reset()
                     continue
                 scan = reader.read_card_ex()
                 if scan:
