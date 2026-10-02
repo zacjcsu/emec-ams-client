@@ -28,8 +28,12 @@ CLOCK = Clock()
 def ev(*a):
     TRACE.append(f"{CLOCK.t:7.1f} " + " ".join(str(x) for x in a))
 
+SCREEN_DOWN_AT = [None]
 class LCD:
-    def display(self, l1="", l2="", color="white"): ev("lcd", repr(l1), repr(l2), color)
+    @property
+    def down(self): return SCREEN_DOWN_AT[0] is not None and CLOCK.t >= SCREEN_DOWN_AT[0]
+    def display(self, l1="", l2="", color="white"):
+        if not self.down: ev("lcd", repr(l1), repr(l2), color)
     def clear(self): ev("lcd-clear")
 
 class Relay:
@@ -123,6 +127,9 @@ SCENARIOS = {
     "group disabled": dict(reader=[(0, STUDENT)], lockout=[(7, "revoked_reason", "group_disabled")]),
     "permission revoked": dict(reader=[(0, STUDENT)], lockout=[(9, "revoked_reason", "no_permission")]),
     "maintenance, no bypass": dict(reader=[(0, STUDENT)], lockout=[(5, "maintenance_active", True)]),
+    "screen down, card removed": dict(reader=[(0, STUDENT), (20, None)], screen_down=8),
+    "screen down during grace, card put back": dict(reader=[(0, STUDENT), (5, None), (10, STUDENT), (30, None)],
+                                                    screen_down=9),
     "temp card removed": dict(reader=[(0, TEMP), (6, None)], temp=True),
     "temp card, other card": dict(reader=[(0, TEMP), (6, JUNK)], temp=True),
     "temp card lost": dict(reader=[(0, TEMP)], lockout=[(8, "revoked_reason", "card_lost")], temp=True),
@@ -142,6 +149,7 @@ for name, sc in SCENARIOS.items():
     CLOCK.t = 0.0
     TRACE.append(f"=== {name}")
     OPEN_AT[0] = sc.get("open_at")
+    SCREEN_DOWN_AT[0] = sc.get("screen_down")
     lockout = Lockout(sc.get("lockout", []))
     reader = Reader(sc["reader"])
     flow = scan_flow.ScanFlow(reader, DB(), LCD(), Activity())

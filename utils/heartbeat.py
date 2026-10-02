@@ -12,7 +12,7 @@ UTC_NOW = "(now() AT TIME ZONE 'UTC')"
 
 
 class HeartbeatMonitor:
-    """Two jobs over one persistent database connection, so the dashboard never has to reach into the Pi:
+    """Three jobs over one persistent database connection, so the dashboard never has to reach into the Pi:
 
     * heartbeat: refresh machine.last_heartbeat every HEARTBEAT_PUSH_SECONDS, using the SERVER's clock.
       The dashboard shows a machine as online while the heartbeat is recent. Only that column is
@@ -20,10 +20,14 @@ class HeartbeatMonitor:
     * restart: if machine.restart_requested_at is later than when this process started, restart the
       app. Comparing to the start time (both on the server clock) means a request is honoured once
       and never loops.
+    * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
+      The dashboard then shows the machine as out of service.
     """
 
-    def __init__(self, machine_id):
+    def __init__(self, machine_id, screen=None):
         self.machine_id = machine_id
+        self.screen = screen
+        self._screen_reported = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
         self._started_at = None  # server time when this process first reached the server
@@ -62,6 +66,13 @@ class HeartbeatMonitor:
                     # Restart=always brings the app back.
                     os.kill(os.getpid(), signal.SIGTERM)
                     return
+
+                down = bool(self.screen and self.screen.down)
+                if down != self._screen_reported:
+                    conn.execute(
+                        "UPDATE machine SET screen_down_since = CASE WHEN %s THEN COALESCE(screen_down_since, now()) END "
+                        "WHERE machine_id = %s", (down, self.machine_id))
+                    self._screen_reported = down
                 if failing:
                     logger.info("[HEARTBEAT] Server reachable again.")
                     failing = False

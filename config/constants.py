@@ -47,6 +47,7 @@ READER_BLINK_DURATION = 0.1
 CARD_POLL_INTERVAL = 0.5  # seconds
 CARD_GRACE_PERIOD_DEFAULT = 10  # fallback if not in system_settings
 LCD_LINE_DELAY = 2  # seconds
+SCREEN_RETRY_SECONDS = 5  # how often a screen that stopped answering is set up again
 IDLE_SCAN_SCREEN_SECONDS = 8       # idle: how long "Scan CSU ID" shows...
 IDLE_LAST_USED_SCREEN_SECONDS = 4  # ...before "Last Used" shows this long
 IDLE_MESSAGE_SCREEN_SECONDS = 4    # ...then the maintenance record's message, if it has one

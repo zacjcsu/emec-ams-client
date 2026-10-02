@@ -57,7 +57,6 @@ class RGB1602:
     self._row = row
     self._col = col
     self._showfunction = LCD_4BITMODE | LCD_1LINE | LCD_5x8DOTS;
-    self.begin(self._row,self._col)
 
         
   def command(self,cmd):

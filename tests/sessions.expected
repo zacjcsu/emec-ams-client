@@ -404,6 +404,58 @@
     8.0 unwatch
     8.0 relay off
     8.0 ended maintenance session False
+=== screen down, card removed
+    0.0 unwatch
+    0.0 db mark_user_active 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+   23.0 db end_session <session>
+   23.0 db mark_user_inactive 830000001
+   23.0 db update_machine_status unknown
+   23.0 db update_machine_heartbeat unknown
+   23.0 server push_user_status
+   23.0 server push_machine_status
+   23.0 server sync_session_to_server
+   24.0 unwatch
+   24.0 relay off
+   24.0 ended screen_down session False
+=== screen down during grace, card put back
+    0.0 unwatch
+    0.0 db mark_user_active 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+    8.0 lcd 'Card removed' 'Waiting for reinsert' yellow
+    8.0 lcd 'Remove detected' 'Reinsert: 10s' yellow
+   11.0 watch 830000001 None False
+   11.0 db update_machine_status unknown
+   11.0 db update_machine_heartbeat unknown
+   11.0 server push_user_status
+   11.0 server push_machine_status
+   11.0 relay on
+   33.0 db end_session <session>
+   33.0 db mark_user_inactive 830000001
+   33.0 db update_machine_status unknown
+   33.0 db update_machine_heartbeat unknown
+   33.0 server push_user_status
+   33.0 server push_machine_status
+   33.0 server sync_session_to_server
+   34.0 unwatch
+   34.0 relay off
+   34.0 ended screen_down session False
 === temp card removed
     0.0 unwatch
     0.0 db mark_user_active 830000009
