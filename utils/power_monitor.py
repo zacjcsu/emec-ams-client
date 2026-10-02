@@ -13,10 +13,10 @@ logger = logging.getLogger("power")
 
 
 class PowerMonitor:
-    """Watches a normally closed microswitch on the machine's contactor and records when the machine is on.
+    """Watches normally closed microswitches on the machine's contactors and records when the machine is on.
 
-    The switch is wired between CONTACTOR_PIN and ground, with the internal pull-up. It is closed while the
-    contactor is out, so the pin reads low when the machine is off. A pulled-in contactor or a broken wire reads
+    The switches are wired in series between CONTACTOR_PIN and ground, with the internal pull-up. They are closed
+    while the contactors are out, so the pin reads low when the machine is off. A pulled-in contactor or a broken wire reads
     high, as on. Times are recorded with or without a session, and with whether the relay was on, so a
     contactor that was bypassed shows up.
 

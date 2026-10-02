@@ -43,7 +43,7 @@ MACHINE_ID = MACHINE_ID.casefold()
 RELAY_PIN = 11
 LED_READER_PIN = 16       # GPIO23, D1
 LED_HEARTBEAT_PIN = 18    # GPIO24, D2
-CONTACTOR_PIN = 37        # GPIO26. The contactor's NC microswitch goes between this and ground on pin 39.
+CONTACTOR_PIN = 37        # GPIO26. NC microswitches go between this and ground on pin 39, in series if more than one.
 CONTACTOR_SETTLE_SECONDS = 0.3
 HEARTBEAT_INTERVAL = 0.5  # toggle every 0.5s = 1 Hz blink
 READER_BLINK_DURATION = 0.1
