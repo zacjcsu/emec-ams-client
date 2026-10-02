@@ -345,6 +345,15 @@ def report_card_present(machine_id, uid_hex, blank, held=False, conn=None):
                                          (machine_id, uid_hex, bool(blank), bool(held))))
 
 
+def report_power_on(machine_id, at, relay_on, conn=None):
+    _with_conn(conn, lambda c: c.execute("SELECT report_power_on(%s::text, %s::timestamptz, %s::boolean)",
+                                         (machine_id, at, bool(relay_on))))
+
+
+def report_power_off(machine_id, at, conn=None):
+    _with_conn(conn, lambda c: c.execute("SELECT report_power_off(%s::text, %s::timestamptz)", (machine_id, at)))
+
+
 def report_card_removed(machine_id, conn=None):
     _with_conn(conn, lambda c: c.execute("SELECT report_card_removed(%s::text)", (machine_id,)))
 

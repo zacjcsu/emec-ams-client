@@ -22,6 +22,7 @@ def _install_fake_gpio():
     gpio.BCM = "BCM"
     gpio.OUT = "OUT"
     gpio.IN = "IN"
+    gpio.PUD_UP = "PUD_UP"
     gpio.HIGH = 1
     gpio.LOW = 0
 

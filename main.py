@@ -13,11 +13,12 @@ from utils.leds import StatusLEDs
 from utils.idle_display import IdleDisplay
 from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
+from utils.power_monitor import PowerMonitor
 import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import CARD_POLL_INTERVAL, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE, SCREEN_RETRY_SECONDS
+from config.constants import CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE, SCREEN_RETRY_SECONDS
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -51,6 +52,7 @@ lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
+power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 
@@ -105,6 +107,8 @@ def main():
     lockout.start()
     heartbeat.start()
     activity.start()
+    if power:
+        power.start()
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD
     while True:
         try:

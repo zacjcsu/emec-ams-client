@@ -29,12 +29,13 @@ def load_machine_config():
                 data.get("machine_name", "Unnamed Machine"),
                 data.get("machine_type", "Unknown Type"),
                 data.get("kind", "attended"),   # how sessions run, see relay/kinds.py
+                bool(data.get("contactor_switch", False)),   # a microswitch is fitted, see utils/power_monitor.py
             )
     except Exception as e:
         logger.warning(f"Could not load config/config.json: {e}")
-        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended")
+        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended", False)
 
-MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND = load_machine_config()
+MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH = load_machine_config()
 MACHINE_ID = MACHINE_ID.casefold()
 
 
@@ -42,6 +43,8 @@ MACHINE_ID = MACHINE_ID.casefold()
 RELAY_PIN = 11
 LED_READER_PIN = 16       # GPIO23, D1
 LED_HEARTBEAT_PIN = 18    # GPIO24, D2
+CONTACTOR_PIN = 37        # GPIO26. The contactor's NC microswitch goes between this and ground on pin 39.
+CONTACTOR_SETTLE_SECONDS = 0.3
 HEARTBEAT_INTERVAL = 0.5  # toggle every 0.5s = 1 Hz blink
 READER_BLINK_DURATION = 0.1
 CARD_POLL_INTERVAL = 0.5  # seconds
