@@ -15,7 +15,8 @@ class CardActivity:
     """Tells the dashboard what is on this machine's reader, and fetches programming jobs.
 
     The main loop (the only code that touches the reader) calls set_present() for a card that did NOT start
-    a session, and set_present(None) when it leaves or a session starts. This thread does the database work,
+    a session, and set_present(None) when it leaves or a session starts. A card held outside its owner's hours
+    is reported as held, and no programming job is fetched for it. This thread does the database work,
     so a slow or unreachable server never stalls card polling:
 
     * every CARD_REPORT_SECONDS while a card is present: report_card_present(), then temp_card_claim_job();
@@ -33,7 +34,7 @@ class CardActivity:
     def __init__(self, machine_id=MACHINE_ID):
         self.machine_id = machine_id
         self._lock = threading.Lock()
-        self._present = None        # (uid_hex, blank)
+        self._present = None        # (uid_hex, blank, held)
         self._stamp = 0.0
         self._job = None
         self._reported = False
@@ -47,9 +48,9 @@ class CardActivity:
     def stop(self):
         self._stop.set()
 
-    def set_present(self, uid_hex, blank=False):
+    def set_present(self, uid_hex, blank=False, held=False):
         with self._lock:
-            self._present = (uid_hex, bool(blank)) if uid_hex else None
+            self._present = (uid_hex, bool(blank), bool(held)) if uid_hex else None
             self._stamp = time.monotonic()
 
     def refused(self, uid_hex, csu_id, reason, at=None):
@@ -95,10 +96,10 @@ class CardActivity:
                         conn.autocommit = True
                 if live:
                     if now - last_report >= CARD_REPORT_SECONDS:
-                        report_card_present(self.machine_id, present[0], present[1], conn=conn)
+                        report_card_present(self.machine_id, *present, conn=conn)
                         self._reported = True
                         last_report = now
-                        if not has_job:
+                        if not has_job and not present[2]:
                             job = temp_card_claim_job(self.machine_id, conn=conn)
                             if job:
                                 logger.info(f"[CARD] Claimed programming job {job['issue_id']} for card {job['card_uid']}")

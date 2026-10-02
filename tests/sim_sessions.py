@@ -44,6 +44,7 @@ class DB:
 
 class Reader:
     """script: list of (from_time, scan or None); the last entry at or before now wins."""
+    reader = None
     def __init__(self, script): self.script = script
     def read_card_ex(self):
         cur = None
@@ -71,6 +72,20 @@ class Lockout:
         self.bypass_maintenance = True; ev("watch_cardless", cardless_id)
     def unwatch(self): self.bypass_maintenance = False; ev("unwatch")
 
+class Activity:
+    """What the dashboard is told is on the reader. Logged only when it changes."""
+    def __init__(self): self.present = None
+    def set_present(self, uid, blank=False, held=False):
+        now = (uid, held) if uid else None
+        if now != self.present: ev("present", *(now or ["none"]))
+        self.present = now
+    def refused(self, uid, csu_id, reason, at=None): ev("refused", uid, reason)
+
+OPEN_AT = [None]   # when the owner of a held card may use the machine again
+def access(csu_id, machine_id):
+    ok = OPEN_AT[0] is not None and CLOCK.t >= OPEN_AT[0]
+    return (True, "lab_hours", None) if ok else (False, "outside_hours", None)
+
 import relay.session_manager as sm
 sm.time = CLOCK
 for f in ("push_session_start", "sync_session_to_server", "push_user_status", "push_machine_status"):
@@ -80,6 +95,10 @@ import relay.kinds as kinds
 import rfid.reader
 kinds.time = CLOCK
 rfid.reader.time = CLOCK
+import rfid.scan_flow as scan_flow
+import rfid.validator as validator
+scan_flow.time = validator.time = CLOCK
+scan_flow.remote_access_decision = validator.remote_access_decision = access
 Reader.wait_until_removed = rfid.reader.RFIDReader.wait_until_removed
 
 STUDENT = NS(uid_hex="AAAA0001", csu_id="830000001", uid_num=1)
@@ -95,6 +114,9 @@ SCENARIOS = {
     "other card during grace": dict(reader=[(0, STUDENT), (4, None), (9, OTHER)]),
     "non-student card is ignored": dict(reader=[(0, STUDENT), (4, JUNK), (12, None)]),
     "lab closes, card held": dict(reader=[(0, STUDENT), (20, None)], lockout=[(12, "revoked_reason", "outside_hours")]),
+    "lab closes, card left until hours open": dict(reader=[(0, STUDENT), (100, None)], open_at=60,
+                                                   lockout=[(12, "revoked_reason", "outside_hours")]),
+    "card put on outside hours, left until they open": dict(refused=True, reader=[(0, STUDENT), (100, None)], open_at=60),
     "lab closes during grace": dict(reader=[(0, STUDENT), (4, None)], lockout=[(10, "revoked_reason", "outside_hours")]),
     "emergency shutdown": dict(reader=[(0, STUDENT)], lockout=[(6, "estop_active", True)]),
     "user disabled": dict(reader=[(0, STUDENT)], lockout=[(7, "revoked_via", "Gone\nSee staff"), (7, "revoked_reason", "user_disabled")]),
@@ -119,18 +141,24 @@ SCENARIOS = {
 for name, sc in SCENARIOS.items():
     CLOCK.t = 0.0
     TRACE.append(f"=== {name}")
+    OPEN_AT[0] = sc.get("open_at")
     lockout = Lockout(sc.get("lockout", []))
-    session = sm.SessionManager(DB(), LCD(), Relay(), lockout)
+    reader = Reader(sc["reader"])
+    flow = scan_flow.ScanFlow(reader, DB(), LCD(), Activity())
+    session = sm.SessionManager(DB(), LCD(), Relay(), lockout, hold_card=flow.hold_after_hours)
     kind = kinds.load_kind(sc.get("kind", "attended"))
+    if sc.get("refused"):
+        ev("process", flow.process(reader.read_card_ex()))
+        continue
     if "cardless" in sc:
         session.start_session(sc.get("csu_id"), "Test User" if sc.get("csu_id") else "Cardless access",
                               session_id="cardless-session", cardless_id=7)
-        ended = kind.run_cardless(session, Reader(sc["reader"]), sc["cardless"])
+        ended = kind.run_cardless(session, reader, sc["cardless"])
     else:
         card = sc["reader"][0][1]
         temp = sc.get("temp", False)
         session.start_session(card.csu_id or "830000009", "Test User", card.uid_hex, temp, sc.get("bypass", False))
-        ended = kind.run(session, Reader(sc["reader"]))
+        ended = kind.run(session, reader)
     ev("ended", ended, "session", session.active_session_id is not None)
 
 trace = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27}", "<session>", "\n".join(TRACE)) + "\n"

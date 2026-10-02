@@ -9,7 +9,7 @@ Refused cards are also sent to the dashboard's scan log, once each time a card i
 import logging
 import time
 from config.constants import LCD_LINE_DELAY, LCD_MESSAGES, MACHINE_ID
-from db.server_sync import temp_card_lookup, temp_card_verify, temp_card_finish, temp_card_maintenance_bypass
+from db.server_sync import remote_access_decision, temp_card_lookup, temp_card_verify, temp_card_finish, temp_card_maintenance_bypass
 from rfid.card_io import CardIO, CardLost, data_block
 from rfid.temp_writer import program_card
 from rfid.validator import validate_card
@@ -27,6 +27,7 @@ REJECT_TEXT = {
     "read_failed": ("Card not valid", "See staff"),
 }
 
+REOPEN_CHECK_SECONDS = 30  # how often a card held after hours asks whether its owner may use the machine again
 LOOKUP_TTL = 2.0      # seconds a lookup result is reused for a card that stays on the reader
 MISSES_TO_REMOVE = 3  # polls with no card before it counts as removed (debounce)
 
@@ -72,9 +73,35 @@ class ScanFlow:
             self._reset_arrival(None)
             self.activity.set_present(None)
 
-    def _hold_until_removed(self, recheck=None):
-        """Hold a refusal on the LCD until the card leaves. True if `recheck` said access came back first."""
+    def _hold_until_removed(self, recheck, csu_id, reason):
+        """Hold a refusal on the LCD until the card leaves. True if `recheck` said access came back first.
+        It never does outside hours: that card has to be put back."""
+        if reason == "outside_hours":
+            self.hold_after_hours(self._uid, csu_id)
+            return False
         return self.reader.wait_until_removed(poll=0.3, recheck=recheck)
+
+    def hold_after_hours(self, uid_hex, csu_id):
+        """Hold a card left on the reader outside its owner's hours until it is lifted off. The dashboard shows
+        the machine as "card left". Once hours open the screen asks for the card to be scanned again."""
+        next_check = time.monotonic() + REOPEN_CHECK_SECONDS
+        told = False
+
+        def tick():
+            nonlocal next_check, told
+            self.activity.set_present(uid_hex, held=True)
+            if not told and time.monotonic() >= next_check:
+                next_check = time.monotonic() + REOPEN_CHECK_SECONDS
+                decision = remote_access_decision(csu_id, MACHINE_ID)
+                if decision and decision[0]:
+                    self.lcd.display("Lift card and", "scan again", color="yellow")
+                    told = True
+            return False
+
+        logger.info(f"[SCAN] Holding card {uid_hex} ({csu_id}) left on the reader outside hours")
+        self.reader.wait_until_removed(poll=0.3, recheck=tick, recheck_every=1.0)
+        self.activity.set_present(None)
+        logger.info(f"[SCAN] Card {uid_hex} lifted off")
 
     def process(self, scan):
         """Handle a card on the reader. Returns a SessionStart if the card started a session, else None

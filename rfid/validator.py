@@ -7,14 +7,14 @@ from config.constants import LCD_LINE_DELAY
 
 logger = logging.getLogger("validator")
 
-# Refusals whose message stays on the LCD until the card is removed (or access returns).
+# Refusals whose message stays on the LCD until the card is removed (or access returns, except outside hours).
 HELD_REASONS = ("user_disabled", "group_disabled", "outside_hours")
 
 def validate_card(csu_id, uid_num, db, lcd, temp=False, hold_until_removed=None):
     """Access check for a person. `temp` marks a temporary card: uid_num is then None, so no student UID is
-    recorded against the user or their access request. `hold_until_removed(recheck)`, if given, is called
-    after a disabled user's message is shown. It returns True if `recheck()` said the user got access while the
-    card was still on the reader (the scan then carries on as a grant), False once the card was removed.
+    recorded against the user or their access request. `hold_until_removed(recheck, csu_id, reason)`, if
+    given, is called after a held refusal is shown. It returns True if `recheck()` said the user got access while
+    the card was still on the reader (the scan then carries on as a grant), False once the card was removed.
     Returns (csu_id, name), or (None, reason) when refused. Starting the session and the power is the caller's."""
     logger.info(f"[VALIDATOR] {'Temp card' if temp else 'Card'} scanned: {csu_id}")
     # Ask the server so dashboard changes apply to this scan; the local cache is only a fallback.
@@ -68,7 +68,7 @@ def validate_card(csu_id, uid_num, db, lcd, temp=False, hold_until_removed=None)
             def recheck():
                 d = remote_access_decision(csu_id, MACHINE_ID)
                 return bool(d and d[0])
-            restored = hold_until_removed(recheck)
+            restored = hold_until_removed(recheck, csu_id, reason)
         else:
             time.sleep(LCD_LINE_DELAY)
         if not restored:

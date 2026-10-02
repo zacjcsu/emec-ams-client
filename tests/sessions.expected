@@ -220,7 +220,45 @@
    12.0 server sync_session_to_server
    12.0 unwatch
    12.0 relay off
-   21.5 ended outside_hours session False
+   13.2 present AAAA0001 True
+   21.0 present none
+   21.0 ended outside_hours session False
+=== lab closes, card left until hours open
+    0.0 unwatch
+    0.0 db mark_user_active 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+   12.0 lcd 'Lab closed' 'Session ended' red
+   12.0 db end_session <session>
+   12.0 db mark_user_inactive 830000001
+   12.0 db update_machine_status unknown
+   12.0 db update_machine_heartbeat unknown
+   12.0 server push_user_status
+   12.0 server push_machine_status
+   12.0 server sync_session_to_server
+   12.0 unwatch
+   12.0 relay off
+   13.2 present AAAA0001 True
+   74.4 lcd 'Lift card and' 'scan again' yellow
+  101.1 present none
+  101.1 ended outside_hours session False
+=== card put on outside hours, left until they open
+    0.0 unwatch
+    0.0 db get_user 830000001
+    0.0 lcd 'Access Denied' 'Outside hours' red
+    1.2 present AAAA0001 True
+   61.2 lcd 'Lift card and' 'scan again' yellow
+  101.1 present none
+  101.1 refused AAAA0001 outside_hours
+  101.1 present AAAA0001 False
+  101.1 process None
 === lab closes during grace
     0.0 unwatch
     0.0 db mark_user_active 830000001
@@ -247,7 +285,7 @@
    10.0 server sync_session_to_server
    10.0 unwatch
    10.0 relay off
-   11.5 ended outside_hours session False
+   10.9 ended outside_hours session False
 === emergency shutdown
     0.0 unwatch
     0.0 db mark_user_active 830000001

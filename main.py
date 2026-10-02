@@ -47,10 +47,10 @@ leds = StatusLEDs()
 reader = RFIDReader(leds=leds)
 lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID)
-session_mgr = SessionManager(db, lcd, relay, lockout)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 flow = ScanFlow(reader, db, lcd, activity)
+session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 
 def exit_handler(sig, frame):
     # De-energise first: everything below can raise, and the machine must not

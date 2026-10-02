@@ -49,10 +49,11 @@ class Attended:
         """End the session if the server says so. Returns the reason, or None."""
         reason = session.lockout_reason()
         if reason:
+            card = (session.active_card_uid, session.active_csu_id)
             session.end_for_lockout(reason)
             if reason == "outside_hours":
-                # "Lab closed / Session ended" stays up until the card is removed.
-                reader.wait_until_removed()
+                # "Lab closed / Session ended" stays up until the card is removed, even once hours open.
+                session.hold_card(*card)
         return reason
 
     def _watch_card(self, session, reader):

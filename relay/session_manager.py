@@ -39,8 +39,10 @@ class SessionManager:
     """Starting and ending sessions: the local and server records, machine status, relay and screen.
     How a running session is watched depends on the machine's kind (relay/kinds.py)."""
 
-    def __init__(self, db, lcd, relay, lockout=None):
+    def __init__(self, db, lcd, relay, lockout=None, hold_card=None):
+        """`hold_card(uid_hex, csu_id)` holds a card left on the reader after lab close until it is lifted off."""
         self.lockout = lockout
+        self.hold_card = hold_card
         self.db = db
         self.lcd = lcd
         self.relay = relay

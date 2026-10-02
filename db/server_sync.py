@@ -340,9 +340,9 @@ def temp_card_maintenance_bypass(uid_hex, machine_id, conn=None):
         return None
 
 
-def report_card_present(machine_id, uid_hex, blank, conn=None):
-    _with_conn(conn, lambda c: c.execute(
-        "SELECT report_card_present(%s::text, %s::text, %s::boolean)", (machine_id, uid_hex, bool(blank))))
+def report_card_present(machine_id, uid_hex, blank, held=False, conn=None):
+    _with_conn(conn, lambda c: c.execute("SELECT report_card_present(%s::text, %s::text, %s::boolean, %s::boolean)",
+                                         (machine_id, uid_hex, bool(blank), bool(held))))
 
 
 def report_card_removed(machine_id, conn=None):
