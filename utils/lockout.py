@@ -218,7 +218,9 @@ class LockoutMonitor:
                 if not failing:
                     logger.error(f"[LOCKOUT] Cannot reach server, keeping state "
                                  f"(estop {'ACTIVE' if self.estop_active else 'clear'}, "
-                                 f"maintenance {'ACTIVE' if self.maintenance_active else 'clear'}): {e}")
+                                 f"maintenance {'ACTIVE' if self.maintenance_active else 'clear'}): {e}",
+                                 extra={"code": "server_unreachable"} if isinstance(
+                                     e, (psycopg.OperationalError, psycopg.InterfaceError)) else None)
                     failing = True
                 try:
                     if conn is not None:
