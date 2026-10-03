@@ -3,6 +3,7 @@ import os
 import signal
 import threading
 import time
+import psycopg
 from db.server_sync import get_server_connection
 from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_POLL_SECONDS
 
@@ -22,11 +23,13 @@ class HeartbeatMonitor:
       and never loops.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
       The dashboard then shows the machine as out of service.
+    * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
     """
 
-    def __init__(self, machine_id, screen=None):
+    def __init__(self, machine_id, screen=None, events=None):
         self.machine_id = machine_id
         self.screen = screen
+        self.events = events
         self._screen_reported = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
@@ -41,6 +44,7 @@ class HeartbeatMonitor:
     def _run(self):
         conn = None
         failing = False
+        events_failing = False
         last_beat = None
         while not self._stop.is_set():
             try:
@@ -73,12 +77,22 @@ class HeartbeatMonitor:
                         "UPDATE machine SET screen_down_since = CASE WHEN %s THEN COALESCE(screen_down_since, now()) END "
                         "WHERE machine_id = %s", (down, self.machine_id))
                     self._screen_reported = down
+                if self.events:
+                    try:
+                        self.events.send(conn)
+                        events_failing = False
+                    except psycopg.OperationalError:
+                        raise
+                    except Exception as e:
+                        if not events_failing:
+                            logger.warning(f"[HEARTBEAT] Cannot send events: {e}")
+                            events_failing = True
                 if failing:
                     logger.info("[HEARTBEAT] Server reachable again.")
                     failing = False
             except Exception as e:
                 if not failing:
-                    logger.error(f"[HEARTBEAT] Server unreachable or query failed: {e}")
+                    logger.error(f"[HEARTBEAT] Server unreachable or query failed: {e}", extra={"code": "server_unreachable"})
                     failing = True
                 try:
                     if conn is not None:

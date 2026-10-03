@@ -42,7 +42,7 @@ class LCD:
         except OSError as e:
             self.down = True
             self._tried = time.monotonic()
-            logger.error(f"[LCD] Screen not answering: {e}")
+            logger.error(f"[LCD] Screen not answering: {e}", extra={"code": "lcd_down"})
 
     def retry(self):
         """Set the screen up again. True once it answers."""

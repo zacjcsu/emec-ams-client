@@ -18,7 +18,8 @@ import signal
 import sys
 from db.local_db import LocalDB
 from config.constants import CARD_POLL_INTERVAL, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE, SCREEN_RETRY_SECONDS
-from db.server_sync import push_machine_status, cardless_begin
+from db.server_sync import push_machine_status, cardless_begin, get_server_connection
+from utils import pi_events
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
@@ -37,8 +38,9 @@ file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 logger = logging.getLogger("main")
+events = pi_events.install(MACHINE_ID, get_server_connection)
 kind = load_kind()
-logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name)
+logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name, extra={"code": "app_start"})
 
 lcd = LCD()
 db = LocalDB()
@@ -46,7 +48,7 @@ relay = RelayController()
 leds = StatusLEDs()
 reader = RFIDReader(leds=leds)
 lockout = LockoutMonitor(relay, kind)
-heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd)
+heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 flow = ScanFlow(reader, db, lcd, activity)
