@@ -20,7 +20,8 @@ class RFIDReader:
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BOARD)
         self.leds = leds
-        self.reader = MFRC522(pin_rst=22)
+        # The driver logs every refused key as an error. Non-CSU cards and temp card writes get refused keys on purpose.
+        self.reader = MFRC522(pin_rst=22, debugLevel="CRITICAL")
 
     def uid_to_number(self, uid):
         num = 0
