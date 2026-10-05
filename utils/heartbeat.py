@@ -5,7 +5,7 @@ import threading
 import time
 import psycopg
 from db.server_sync import get_server_connection
-from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_POLL_SECONDS
+from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS
 
 logger = logging.getLogger("heartbeat")
 
@@ -20,7 +20,8 @@ class HeartbeatMonitor:
       written: status stays whatever the Pi or the dashboard (maintenance) last set.
     * restart: if machine.restart_requested_at is later than when this process started, restart the
       app. Comparing to the start time (both on the server clock) means a request is honoured once
-      and never loops.
+      and never loops. A request older than RESTART_MAX_AGE_SECONDS is ignored, so a Pi that was offline
+      doesn't restart mid-session when it reconnects.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
       The dashboard then shows the machine as out of service.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
@@ -34,6 +35,7 @@ class HeartbeatMonitor:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
         self._started_at = None  # server time when this process first reached the server
+        self._ignored_restart = None
 
     def start(self):
         self._thread.start()
@@ -62,9 +64,14 @@ class HeartbeatMonitor:
                     last_beat = now
 
                 row = conn.execute(
-                    "SELECT restart_requested_at AS r FROM machine WHERE machine_id = %s",
-                    (self.machine_id,)).fetchone()
-                if row and row["r"] and row["r"] > self._started_at:
+                    f"SELECT restart_requested_at AS r, restart_requested_at > {UTC_NOW} - make_interval(secs => %s) AS fresh "
+                    "FROM machine WHERE machine_id = %s",
+                    (RESTART_MAX_AGE_SECONDS, self.machine_id)).fetchone()
+                if row and row["r"] and row["r"] > self._started_at and not row["fresh"]:
+                    if row["r"] != self._ignored_restart:
+                        logger.info(f"[HEARTBEAT] Ignoring the restart requested at {row['r']}. It is too old.")
+                        self._ignored_restart = row["r"]
+                elif row and row["r"] and row["r"] > self._started_at:
                     logger.warning(f"[HEARTBEAT] Restart requested at {row['r']}; restarting.")
                     # SIGTERM runs main.py's exit handler (relay off, session closed); systemd's
                     # Restart=always brings the app back.
