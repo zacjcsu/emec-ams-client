@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS Users (
     uid TEXT,
     name TEXT,
     last_used TEXT,
-    is_active INTEGER DEFAULT 0,
     disabled_at TEXT,
     disabled_line1 TEXT,
     disabled_line2 TEXT

@@ -84,7 +84,7 @@ class SessionManager:
             self.active_session_id = session_id or str(uuid.uuid4())
             self.session_start_time = time.time()
             if csu_id:
-                self.db.mark_user_active(csu_id)
+                self.db.mark_user_used(csu_id)
             self.db.insert_session(self.active_session_id, csu_id, MACHINE_ID, card_uid)
             push_session_start(self.active_session_id)     # the dashboard shows who is on the machine from now
             logger.info(f"[SESSION] Started: {display_name} ({csu_id}), session_id: {self.active_session_id}"
@@ -159,7 +159,7 @@ class SessionManager:
 
         self.db.end_session(self.active_session_id)
         if self.active_csu_id:
-            self.db.mark_user_inactive(self.active_csu_id)
+            self.db.mark_user_used(self.active_csu_id)
         self._sync_machine_status(STATUS_NEUTRAL, self.active_csu_id)
 
         sync_session_to_server(self.active_session_id)

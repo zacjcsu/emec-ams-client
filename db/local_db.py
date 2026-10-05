@@ -137,17 +137,10 @@ class LocalDB:
         """, (uid, csu_id, machine_id, machine_type, now))
         self.conn.commit()
 
-    def mark_user_active(self, csu_id):
+    def mark_user_used(self, csu_id):
         now = utc_now_str()
         self.cursor.execute(
-            "UPDATE Users SET is_active = 1, last_used = ? WHERE csu_id = ?", (now, csu_id,)
-        )
-        self.conn.commit()
-
-    def mark_user_inactive(self, csu_id):
-        now = utc_now_str()
-        self.cursor.execute(
-            "UPDATE Users SET is_active = 0, last_used = ? WHERE csu_id = ?", (now, csu_id,)
+            "UPDATE Users SET last_used = ? WHERE csu_id = ?", (now, csu_id,)
         )
         self.conn.commit()
 

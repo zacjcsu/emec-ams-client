@@ -37,7 +37,7 @@ def get_server_connection(timeout=10):
 # SQLite stores neither natively.
 PULL_QUERIES = {
     "Users": (
-        "SELECT csu_id, uid, name, last_used::text AS last_used, is_active::int AS is_active, "
+        "SELECT csu_id, uid, name, last_used::text AS last_used, "
         "disabled_at::text AS disabled_at, disabled_line1, disabled_line2 FROM users",
         (),
     ),
