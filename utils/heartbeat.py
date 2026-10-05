@@ -5,13 +5,14 @@ import threading
 import time
 import psycopg
 from db.server_sync import UTC_NOW, get_server_connection
-from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS, UPDATE_AFTER_SESSION
+from config.constants import (CONTACTOR_SWITCH, HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS,
+                              UPDATE_AFTER_SESSION)
 
 logger = logging.getLogger("heartbeat")
 
 
 class HeartbeatMonitor:
-    """Three jobs over one persistent database connection, so the dashboard never has to reach into the Pi:
+    """Jobs over one persistent database connection, so the dashboard never has to reach into the Pi:
 
     * heartbeat: refresh machine.last_heartbeat every HEARTBEAT_PUSH_SECONDS, using the SERVER's clock.
       The dashboard shows a machine as online while the heartbeat is recent. Only that column is
@@ -24,6 +25,8 @@ class HeartbeatMonitor:
       The main loop updates once no session is open. The update restarts the app, so a request is honoured once.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
+    * contactor switch: set machine.contactor_switch from the config once. The dashboard only shows the
+      spindle and checks for contactor faults when it's on.
     """
 
     def __init__(self, machine_id, screen=None, events=None):
@@ -31,6 +34,7 @@ class HeartbeatMonitor:
         self.screen = screen
         self.events = events
         self._screen_reported = None
+        self._switch_reported = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
         self._started_at = None  # server time when this process first reached the server
@@ -62,6 +66,16 @@ class HeartbeatMonitor:
                         f"UPDATE machine SET last_heartbeat = {UTC_NOW} WHERE machine_id = %s",
                         (self.machine_id,))
                     last_beat = now
+
+                if not self._switch_reported:
+                    try:
+                        conn.execute("UPDATE machine SET contactor_switch = %s WHERE machine_id = %s",
+                                     (CONTACTOR_SWITCH, self.machine_id))
+                    except psycopg.OperationalError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[HEARTBEAT] Cannot report the contactor switch: {e}")
+                    self._switch_reported = True    # once, even if the server is too old to take it
 
                 row = conn.execute(
                     f"SELECT restart_requested_at AS r, restart_requested_at > {UTC_NOW} - make_interval(secs => %s) AS fresh, "
