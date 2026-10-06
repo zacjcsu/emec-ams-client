@@ -198,6 +198,15 @@ def sync_session_to_server(session_id):
         logger.error(f"[SYNC] Session sync failed: {e}")
 
 
+def sync_finished_sessions():
+    """Send sessions that ended while the server was unreachable."""
+    with _local() as conn_local:
+        ids = [r["session_id"] for r in conn_local.execute(
+            "SELECT session_id FROM Machine_Usage WHERE end_time IS NOT NULL")]
+    for session_id in ids:
+        sync_session_to_server(session_id)
+
+
 def fetch_last_heartbeat(machine_id):
     """machine.last_heartbeat (naive UTC) for this machine, or None if the server is unreachable or it has none."""
     try:

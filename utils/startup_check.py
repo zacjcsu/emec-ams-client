@@ -5,7 +5,7 @@ from config.constants import (
     LCD_MESSAGES, STATUS_MAINTENANCE, STATUS_NEUTRAL, MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, LCD_LINE_DELAY, DB_ENV,
     DEVICE_ID,
 )
-from db.server_sync import sync_local_from_server, push_machine_status
+from db.server_sync import sync_local_from_server, sync_finished_sessions, push_machine_status
 
 
 logger = logging.getLogger("startup")
@@ -26,14 +26,22 @@ def startup_sequence(lcd, db):
     device_ip = get_local_ip()
     logger.info(f"[PASS] Device IP (reported to dashboard): {device_ip}")
 
+    online = True
     try:
         lcd.display("Syncing online")
         sync_local_from_server()
         logger.info("[PASS] Server sync complete.")
+        sync_finished_sessions()
     except Exception as e:
-        lcd.display(*LCD_MESSAGES["db_error"], color="red")
         logger.error(f"[ERROR] Server sync failed: {e}")
-        return False
+        if not db.get_machine(MACHINE_ID):
+            lcd.display(*LCD_MESSAGES["db_error"], color="red")
+            return False
+        # Card checks already fall back to the last sync, so keep taking cards on it.
+        logger.warning("[WARN] Server offline. Using the last sync.")
+        lcd.display(*LCD_MESSAGES["offline"], color="yellow")
+        time.sleep(LCD_LINE_DELAY)
+        online = False
 
     machine = db.get_machine(MACHINE_ID)
     if not machine:
@@ -52,7 +60,8 @@ def startup_sequence(lcd, db):
     db.update_machine_heartbeat(MACHINE_ID)
     db.update_machine_device(MACHINE_ID, DEVICE_ID)
     db.update_machine_ip(MACHINE_ID, device_ip)
-    push_machine_status(db, MACHINE_ID)
+    if online:
+        push_machine_status(db, MACHINE_ID)
     logger.info(f"[PASS] Machine {MACHINE_ID} is neutral, heartbeat and address updated.")
 
     lcd.display(*LCD_MESSAGES["start"])

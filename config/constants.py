@@ -89,6 +89,7 @@ LCD_MESSAGES = {
     "startup_next": ["Scan CSU ID", "to start"],
     "maintenance": [MACHINE_NAME, "Out of order"],
     "db_error": ["Server Error", "Check conn."],
+    "offline": ["Server offline", "Using last sync"],
 }
 
 
