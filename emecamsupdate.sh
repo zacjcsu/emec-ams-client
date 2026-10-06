@@ -5,7 +5,7 @@
 #
 # Triggered by the timer (boot + daily 01:00) and by the .path unit.
 # Modes: blank config -> wait; filled + service disabled -> provision;
-# filled + enabled -> update.
+# filled + enabled -> update. An update with nothing new leaves the app running.
 
 set -euo pipefail
 
@@ -359,6 +359,14 @@ provision() {
 # ---------------------------------------------------------------------------
 
 update() {
+    if as_app git -C "$APP_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null \
+        && [[ "$(as_app git -C "$APP_DIR" rev-parse HEAD)" == "$(as_app git -C "$APP_DIR" rev-parse FETCH_HEAD)" ]] \
+        && [[ -z "$(as_app git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]] \
+        && systemctl is-active --quiet "$SERVICE"; then
+        log "Already at $(as_app git -C "$APP_DIR" log -1 --pretty='%h %s'). Not restarting."
+        return 0
+    fi
+
     log "Stopping ${SERVICE}."
     systemctl stop "$SERVICE" || true
 

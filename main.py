@@ -41,7 +41,14 @@ logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 logger = logging.getLogger("main")
 events = pi_events.install(MACHINE_ID, get_server_connection)
 kind = load_kind()
-logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name, extra={"code": "app_start"})
+# Written on a clean stop (update, dashboard restart, reboot). Without it this start followed a crash or a power cut,
+# and the dashboard counts it toward "keeps restarting".
+CLEAN_STOP = "data/stopped_cleanly"
+clean = os.path.exists(CLEAN_STOP)
+if clean:
+    os.remove(CLEAN_STOP)
+logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name,
+            extra={"code": "app_restart" if clean else "app_start"})
 
 lcd = LCD()
 db = LocalDB()
@@ -60,6 +67,10 @@ def exit_handler(sig, frame):
     # De-energise first: everything below can raise, and the machine must not
     # be left live by a failed shutdown.
     relay.turn_off()
+    try:
+        open(CLEAN_STOP, "w").close()
+    except OSError:
+        pass
     # Close any open session so its usage is recorded (this is also how a dashboard restart lands).
     try:
         session_mgr.force_end_session(reason="restart")
