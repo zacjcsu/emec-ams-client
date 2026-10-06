@@ -16,7 +16,7 @@ COLORS = {
 
 class LCD:
     """A screen that stops answering is marked `down` instead of raising. It is set up again every
-    SCREEN_RETRY_SECONDS. main.py takes no new sessions until it answers."""
+    SCREEN_RETRY_SECONDS. The machine keeps running meanwhile."""
 
     def __init__(self):
         self.lcd = RGB1602(16, 2)

@@ -18,7 +18,7 @@ import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE, SCREEN_RETRY_SECONDS
+from config.constants import CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -90,13 +90,6 @@ def cardless_start():
     started.cardless_id, started.session_id, started.seconds = cardless_id, row["session_id"], row["seconds"]
     return started
 
-def wait_for_screen():
-    """No new sessions while the screen doesn't answer. Cards are not read and the relay stays off."""
-    logger.warning("[MAIN] Out of service until the screen answers.")
-    relay.turn_off()
-    while not lcd.retry():
-        time.sleep(SCREEN_RETRY_SECONDS)
-
 def main():
     # Before the heartbeat thread starts: its first beat would replace the previous run's last heartbeat,
     # which is what an unfinished session is closed at.
@@ -112,10 +105,6 @@ def main():
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD
     while True:
         try:
-            if lcd.down:
-                wait_for_screen()
-                skip_startup = False
-                continue
             if skip_startup:
                 skip_startup = False
             elif lockout.estop_active or lockout.maintenance_active:
@@ -133,8 +122,6 @@ def main():
             idle.reset()
             started = None
             while True:
-                if lcd.down:
-                    break
                 if lockout.estop_active:
                     idle.tick()
                     time.sleep(CARD_POLL_INTERVAL)

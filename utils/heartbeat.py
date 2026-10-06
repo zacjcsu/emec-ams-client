@@ -23,7 +23,6 @@ class HeartbeatMonitor:
       and never loops. A request older than RESTART_MAX_AGE_SECONDS is ignored, so a Pi that was offline
       doesn't restart mid-session when it reconnects.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
-      The dashboard then shows the machine as out of service.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
     """
 

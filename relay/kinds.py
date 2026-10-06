@@ -28,11 +28,6 @@ class Attended:
         # A resumed session is watched again, so the next removal gets its own grace period.
         ended = self._watch_card(session, reader)
         while ended == "removed":
-            if session.lcd.down:
-                # Nobody could see the grace period count down.
-                session.force_end_session()
-                logger.info("[SESSION] Ended when the card came off; the screen is down.")
-                return "screen_down"
             ended = self._grace_period(session, reader)
             if ended == "resumed":
                 ended = self._watch_card(session, reader)
