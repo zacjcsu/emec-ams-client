@@ -109,6 +109,7 @@ STUDENT = NS(uid_hex="AAAA0001", csu_id="830000001", uid_num=1)
 OTHER = NS(uid_hex="BBBB0002", csu_id="830000002", uid_num=2)
 TEMP = NS(uid_hex="CCCC0003", csu_id=None, uid_num=3)
 JUNK = NS(uid_hex="DDDD0004", csu_id=None, uid_num=4)
+STUDENT_UNREAD = NS(uid_hex="AAAA0001", csu_id=None, uid_num=1)   # the reader got the UID but not the CSU ID
 
 SCENARIOS = {
     "removed, grace runs out": dict(reader=[(0, STUDENT), (20, None)]),
@@ -117,6 +118,8 @@ SCENARIOS = {
     "other student card": dict(reader=[(0, STUDENT), (8, OTHER)]),
     "other card during grace": dict(reader=[(0, STUDENT), (4, None), (9, OTHER)]),
     "non-student card is ignored": dict(reader=[(0, STUDENT), (4, JUNK), (12, None)]),
+    "CSU ID unreadable mid-session": dict(reader=[(0, STUDENT), (4, STUDENT_UNREAD), (30, None)]),
+    "put back with CSU ID unreadable": dict(reader=[(0, STUDENT), (4, None), (9, STUDENT_UNREAD), (30, None)]),
     "lab closes, card held": dict(reader=[(0, STUDENT), (20, None)], lockout=[(12, "revoked_reason", "outside_hours")]),
     "lab closes, card left until hours open": dict(reader=[(0, STUDENT), (100, None)], open_at=60,
                                                    lockout=[(12, "revoked_reason", "outside_hours")]),

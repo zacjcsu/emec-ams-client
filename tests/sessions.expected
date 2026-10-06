@@ -198,6 +198,86 @@
    18.0 unwatch
    18.0 relay off
    18.0 ended timeout session False
+=== CSU ID unreadable mid-session
+    0.0 unwatch
+    0.0 db mark_user_used 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+   33.0 lcd 'Card removed' 'Waiting for reinsert' yellow
+   33.0 lcd 'Remove detected' 'Reinsert: 10s' yellow
+   34.0 lcd 'Remove detected' 'Reinsert: 9s' yellow
+   35.0 lcd 'Remove detected' 'Reinsert: 8s' yellow
+   36.0 lcd 'Remove detected' 'Reinsert: 7s' yellow
+   37.0 lcd 'Remove detected' 'Reinsert: 6s' yellow
+   38.0 lcd 'Remove detected' 'Reinsert: 5s' yellow
+   39.0 lcd 'Remove detected' 'Reinsert: 4s' yellow
+   40.0 lcd 'Remove detected' 'Reinsert: 3s' yellow
+   41.0 lcd 'Remove detected' 'Reinsert: 2s' yellow
+   42.0 lcd 'Remove detected' 'Reinsert: 1s' yellow
+   43.0 db end_session <session>
+   43.0 db mark_user_used 830000001
+   43.0 db update_machine_status unknown
+   43.0 db update_machine_heartbeat unknown
+   43.0 server push_user_status
+   43.0 server push_machine_status
+   43.0 server sync_session_to_server
+   43.0 lcd 'Session' 'ended' red
+   44.0 unwatch
+   44.0 relay off
+   44.0 ended timeout session False
+=== put back with CSU ID unreadable
+    0.0 unwatch
+    0.0 db mark_user_used 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+    7.0 lcd 'Card removed' 'Waiting for reinsert' yellow
+    7.0 lcd 'Remove detected' 'Reinsert: 10s' yellow
+    8.0 lcd 'Remove detected' 'Reinsert: 9s' yellow
+    9.0 lcd 'Remove detected' 'Reinsert: 8s' yellow
+    9.0 lcd 'Session' 'resumed' green
+   10.0 watch 830000001 None False
+   10.0 db update_machine_status unknown
+   10.0 db update_machine_heartbeat unknown
+   10.0 server push_user_status
+   10.0 server push_machine_status
+   10.0 relay on
+   10.0 lcd 'Test User' 'in use' green
+   33.0 lcd 'Card removed' 'Waiting for reinsert' yellow
+   33.0 lcd 'Remove detected' 'Reinsert: 10s' yellow
+   34.0 lcd 'Remove detected' 'Reinsert: 9s' yellow
+   35.0 lcd 'Remove detected' 'Reinsert: 8s' yellow
+   36.0 lcd 'Remove detected' 'Reinsert: 7s' yellow
+   37.0 lcd 'Remove detected' 'Reinsert: 6s' yellow
+   38.0 lcd 'Remove detected' 'Reinsert: 5s' yellow
+   39.0 lcd 'Remove detected' 'Reinsert: 4s' yellow
+   40.0 lcd 'Remove detected' 'Reinsert: 3s' yellow
+   41.0 lcd 'Remove detected' 'Reinsert: 2s' yellow
+   42.0 lcd 'Remove detected' 'Reinsert: 1s' yellow
+   43.0 db end_session <session>
+   43.0 db mark_user_used 830000001
+   43.0 db update_machine_status unknown
+   43.0 db update_machine_heartbeat unknown
+   43.0 server push_user_status
+   43.0 server push_machine_status
+   43.0 server sync_session_to_server
+   43.0 lcd 'Session' 'ended' red
+   44.0 unwatch
+   44.0 relay off
+   44.0 ended timeout session False
 === lab closes, card held
     0.0 unwatch
     0.0 db mark_user_used 830000001

@@ -36,13 +36,14 @@ class Attended:
     def _classify(self, session, scan):
         """'same' if `scan` is the card that started this session, 'other' if it is a different card,
         'absent' if there is no card. A temporary card is recognised by its UID (it has no CSU ID), a student
-        card by its CSU ID. An unreadable non-student card during a student session counts as absent."""
+        card by its CSU ID. During a student session, a card with no CSU ID is the same card if its UID matches
+        (a weak reader can fail to open the CSU sector), and otherwise counts as absent."""
         if scan is None:
             return "absent"
         if session.active_temp:
             return "same" if scan.uid_hex == session.active_card_uid else "other"
         if scan.csu_id is None:
-            return "absent"
+            return "same" if session.active_card_uid and scan.uid_hex == session.active_card_uid else "absent"
         return "same" if scan.csu_id == session.active_csu_id else "other"
 
     def _ended_by_lockout(self, session, reader):
