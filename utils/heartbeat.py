@@ -4,12 +4,10 @@ import signal
 import threading
 import time
 import psycopg
-from db.server_sync import get_server_connection
+from db.server_sync import UTC_NOW, get_server_connection
 from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS
 
 logger = logging.getLogger("heartbeat")
-
-UTC_NOW = "(now() AT TIME ZONE 'UTC')"
 
 
 class HeartbeatMonitor:

@@ -9,6 +9,8 @@ import psycopg
 from psycopg.rows import dict_row
 from config.constants import DB_ENV, LOCAL_DB_PATH, MACHINE_ID
 
+UTC_NOW = "(now() AT TIME ZONE 'UTC')"
+
 logger = logging.getLogger("server_sync")
 
 
@@ -219,18 +221,19 @@ def push_machine_status(db, machine_id):
         with get_server_connection() as conn:
             with conn.cursor() as cur:
                 # The dashboard owns name and category, so an existing row only gets status fields.
+                # The heartbeat uses the server's clock. After a power cut the Pi's clock is behind until it syncs.
                 cur.execute(
-                    "UPDATE machine SET machine_status = %s, last_heartbeat = %s, device_ip = %s, device_id = %s "
+                    f"UPDATE machine SET machine_status = %s, last_heartbeat = {UTC_NOW}, device_ip = %s, device_id = %s "
                     "WHERE machine_id = %s",
-                    (machine["machine_status"], machine["last_heartbeat"], device_ip, device_id, machine_id),
+                    (machine["machine_status"], device_ip, device_id, machine_id),
                 )
                 if cur.rowcount == 0:
                     # First run of a new Pi. machine_type must already exist as a category on the dashboard.
                     cur.execute(
                         "INSERT INTO machine (machine_id, machine_name, machine_type, device_ip, machine_status, last_heartbeat, device_id) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        f"VALUES (%s, %s, %s, %s, %s, {UTC_NOW}, %s)",
                         (machine["machine_id"], machine["machine_name"], machine["machine_type"],
-                         device_ip, machine["machine_status"], machine["last_heartbeat"], device_id),
+                         device_ip, machine["machine_status"], device_id),
                     )
         logger.info(f"[SYNC] Machine status pushed for {machine_id}")
     except Exception as e:
