@@ -48,6 +48,7 @@ CONTACTOR_SETTLE_SECONDS = 0.3
 HEARTBEAT_INTERVAL = 0.5  # toggle every 0.5s = 1 Hz blink
 READER_BLINK_DURATION = 0.1
 CARD_POLL_INTERVAL = 0.5  # seconds
+READER_CHECK_SECONDS = 5  # how often the reader chip is checked for having reset itself
 CARD_GRACE_PERIOD_DEFAULT = 10  # fallback if not in system_settings
 LCD_LINE_DELAY = 2  # seconds
 SCREEN_RETRY_SECONDS = 5  # how often a screen that stopped answering is set up again

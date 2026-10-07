@@ -3,7 +3,7 @@ import RPi.GPIO as GPIO
 import time
 import logging
 from collections import namedtuple
-from config.constants import CARD_POLL_INTERVAL
+from config.constants import CARD_POLL_INTERVAL, READER_CHECK_SECONDS
 from rfid.card_io import uid_hex
 
 logger = logging.getLogger("rfid")
@@ -22,6 +22,27 @@ class RFIDReader:
         self.leds = leds
         # The driver logs every refused key as an error. Non-CSU cards and temp card writes get refused keys on purpose.
         self.reader = MFRC522(pin_rst=22, debugLevel="CRITICAL")
+        self._next_check = time.monotonic() + READER_CHECK_SECONDS
+        self._down = False
+
+    def check_chip(self):
+        """Set the chip up again if it has reset itself. A spike when the relay switches can do that. A reset chip
+        has its antenna off, so it sees no cards and raises no error."""
+        if time.monotonic() < self._next_check:
+            return
+        self._next_check = time.monotonic() + READER_CHECK_SECONDS
+        r = self.reader
+        tx, tmode = r.Read_MFRC522(r.TxControlReg), r.Read_MFRC522(r.TModeReg)
+        if tx & 0x03 == 0x03 and tmode == 0x8D:
+            if self._down:
+                logger.info("[RFID] Reader answers again")
+                self._down = False
+            return
+        if not self._down:
+            logger.warning(f"[RFID] Reader had reset (TxControl {tx:#04x}, TMode {tmode:#04x}); setting it up again")
+        r.MFRC522_Init()
+        # Logged once while a dead or unplugged chip keeps failing.
+        self._down = r.Read_MFRC522(r.TModeReg) != 0x8D
 
     def uid_to_number(self, uid):
         num = 0
@@ -38,6 +59,7 @@ class RFIDReader:
         """
         (status, uid) = self.reader.MFRC522_Request(self.reader.PICC_REQIDL)
         if status != self.reader.MI_OK:
+            self.check_chip()
             return None
 
         (status, uid) = self.reader.MFRC522_Anticoll()
