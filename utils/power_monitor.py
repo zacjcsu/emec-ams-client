@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import RPi.GPIO as GPIO
 
-from config.constants import CONTACTOR_PIN, CONTACTOR_SETTLE_SECONDS
+from config.constants import CONTACTOR_INVERTED, CONTACTOR_PIN, CONTACTOR_SETTLE_SECONDS
 from db.server_sync import get_server_connection, report_power_off, report_power_on
 
 logger = logging.getLogger("power")
@@ -19,6 +19,9 @@ class PowerMonitor:
     while the contactors are out, so the pin reads low when the machine is off. A pulled-in contactor or a broken wire reads
     high, as on. Times are recorded with or without a session, and with whether the relay was on, so a
     contactor that was bypassed shows up.
+
+    With "contactor_switch": "inverted" in config.json the reading is flipped, for a switch that is closed while the
+    contactor is in. Then a broken wire reads as off.
 
     Changes wait in a queue until the server takes them, so they survive a network outage but not a restart.
     At start the current state is reported once, which closes a row left open while the app was down.
@@ -40,7 +43,7 @@ class PowerMonitor:
         self._stop.set()
 
     def _read(self):
-        return GPIO.input(CONTACTOR_PIN) == GPIO.HIGH
+        return (GPIO.input(CONTACTOR_PIN) == GPIO.HIGH) != CONTACTOR_INVERTED
 
     def _run(self):
         state = None

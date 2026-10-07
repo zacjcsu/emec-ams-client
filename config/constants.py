@@ -30,12 +30,13 @@ def load_machine_config():
                 data.get("machine_type", "Unknown Type"),
                 data.get("kind", "attended"),   # how sessions run, see relay/kinds.py
                 bool(data.get("contactor_switch", False)),   # a microswitch is fitted, see utils/power_monitor.py
+                data.get("contactor_switch") == "inverted",  # it is closed while the contactor is in
             )
     except Exception as e:
         logger.warning(f"Could not load config/config.json: {e}")
-        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended", False)
+        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended", False, False)
 
-MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH = load_machine_config()
+MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH, CONTACTOR_INVERTED = load_machine_config()
 MACHINE_ID = MACHINE_ID.casefold()
 
 
