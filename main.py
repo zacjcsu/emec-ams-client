@@ -18,7 +18,8 @@ import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE
+from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE,
+                              UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -88,6 +89,14 @@ def exit_handler(sig, frame):
 signal.signal(signal.SIGINT, exit_handler)
 signal.signal(signal.SIGTERM, exit_handler)
 
+def request_update():
+    """Hand UPDATE_AFTER_SESSION to the updater. "restart" makes it restart the app even with no new code."""
+    logger.info("[MAIN] No session open; updating now.")
+    # Removed first: the updater stops this app, and a leftover file would update again on the next start.
+    os.remove(UPDATE_AFTER_SESSION)
+    with open(UPDATE_FLAG, "w") as f:
+        f.write("restart\n")
+
 def cardless_start():
     """A cardless session from the dashboard to start now, or None."""
     cardless_id = lockout.take_cardless()
@@ -133,6 +142,8 @@ def main():
             idle.reset()
             started = None
             while True:
+                if os.path.exists(UPDATE_AFTER_SESSION):
+                    request_update()
                 if lockout.estop_active:
                     idle.tick()
                     time.sleep(CARD_POLL_INTERVAL)

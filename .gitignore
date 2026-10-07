@@ -19,6 +19,8 @@ logs/*
 
 # Touch to update now; watched by emec-ams-update.path
 .update-requested
+# Touch to update once no session is open
+.update-after-session
 
 # Python
 __pycache__/

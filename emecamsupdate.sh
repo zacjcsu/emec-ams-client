@@ -117,6 +117,11 @@ fi
 mkdir -p "${APP_DIR}/logs"
 exec > >(tee -a "$LOGFILE") 2>&1
 
+# The app writes "restart" when an update waited for a session to end.
+# The app restarts even with no new code, so the dashboard sees it come back.
+FORCE_RESTART=0
+[[ "$(cat "$FLAG" 2>/dev/null)" == restart ]] && FORCE_RESTART=1
+
 # Must precede any early exit: the .path unit re-triggers the instant this
 # service ends, so a leftover flag means a restart loop.
 rm -f "$FLAG"
@@ -359,7 +364,8 @@ provision() {
 # ---------------------------------------------------------------------------
 
 update() {
-    if as_app git -C "$APP_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null \
+    if (( ! FORCE_RESTART )) \
+        && as_app git -C "$APP_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null \
         && [[ "$(as_app git -C "$APP_DIR" rev-parse HEAD)" == "$(as_app git -C "$APP_DIR" rev-parse FETCH_HEAD)" ]] \
         && [[ -z "$(as_app git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]] \
         && systemctl is-active --quiet "$SERVICE"; then

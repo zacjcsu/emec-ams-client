@@ -5,7 +5,7 @@ import threading
 import time
 import psycopg
 from db.server_sync import UTC_NOW, get_server_connection
-from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS
+from config.constants import HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS, UPDATE_AFTER_SESSION
 
 logger = logging.getLogger("heartbeat")
 
@@ -20,6 +20,8 @@ class HeartbeatMonitor:
       app. Comparing to the start time (both on the server clock) means a request is honoured once
       and never loops. A request older than RESTART_MAX_AGE_SECONDS is ignored, so a Pi that was offline
       doesn't restart mid-session when it reconnects.
+    * update: if machine.update_requested_at is later than when this process started, write UPDATE_AFTER_SESSION.
+      The main loop updates once no session is open. The update restarts the app, so a request is honoured once.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
     """
@@ -33,6 +35,7 @@ class HeartbeatMonitor:
         self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
         self._started_at = None  # server time when this process first reached the server
         self._ignored_restart = None
+        self._update_seen = None
 
     def start(self):
         self._thread.start()
@@ -61,9 +64,13 @@ class HeartbeatMonitor:
                     last_beat = now
 
                 row = conn.execute(
-                    f"SELECT restart_requested_at AS r, restart_requested_at > {UTC_NOW} - make_interval(secs => %s) AS fresh "
-                    "FROM machine WHERE machine_id = %s",
+                    f"SELECT restart_requested_at AS r, restart_requested_at > {UTC_NOW} - make_interval(secs => %s) AS fresh, "
+                    "update_requested_at AS u FROM machine WHERE machine_id = %s",
                     (RESTART_MAX_AGE_SECONDS, self.machine_id)).fetchone()
+                if row and row["u"] and row["u"] > self._started_at and row["u"] != self._update_seen:
+                    logger.info(f"[HEARTBEAT] Update requested at {row['u']}; it runs once no session is open.")
+                    open(UPDATE_AFTER_SESSION, "w").close()
+                    self._update_seen = row["u"]
                 if row and row["r"] and row["r"] > self._started_at and not row["fresh"]:
                     if row["r"] != self._ignored_restart:
                         logger.info(f"[HEARTBEAT] Ignoring the restart requested at {row['r']}. It is too old.")
