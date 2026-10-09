@@ -21,7 +21,7 @@ class PowerMonitor:
     contactor that was bypassed shows up.
 
     With "contactor_switch": "inverted" in config.json the reading is flipped, for a switch that is closed while the
-    contactor is in. Then a broken wire reads as off.
+    contactor is in. Then a broken wire reads as off. "contactor_pin" picks the header pin, 37 when it's not set.
 
     Changes wait in a queue until the server takes them, so they survive a network outage but not a restart.
     At start the current state is reported once, which closes a row left open while the app was down.

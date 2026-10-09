@@ -31,12 +31,13 @@ def load_machine_config():
                 data.get("kind", "attended"),   # how sessions run, see relay/kinds.py
                 bool(data.get("contactor_switch", False)),   # a microswitch is fitted, see utils/power_monitor.py
                 data.get("contactor_switch") == "inverted",  # it is closed while the contactor is in
+                int(data.get("contactor_pin", 37)),          # header pin, ground is pin 39
             )
     except Exception as e:
         logger.warning(f"Could not load config/config.json: {e}")
-        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended", False, False)
+        return ("UNKNOWN", "Unnamed Machine", "Unknown Type", "attended", False, False, 37)
 
-MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH, CONTACTOR_INVERTED = load_machine_config()
+MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH, CONTACTOR_INVERTED, CONTACTOR_PIN = load_machine_config()
 MACHINE_ID = MACHINE_ID.casefold()
 
 
@@ -44,7 +45,7 @@ MACHINE_ID = MACHINE_ID.casefold()
 RELAY_PIN = 11
 LED_READER_PIN = 16       # GPIO23, D1
 LED_HEARTBEAT_PIN = 18    # GPIO24, D2
-CONTACTOR_PIN = 37        # GPIO26. NC microswitches go between this and ground on pin 39, in series if more than one.
+# CONTACTOR_PIN is set above from "contactor_pin" in config.json. 37 is GPIO26, 40 is GPIO21.
 CONTACTOR_SETTLE_SECONDS = 0.3
 HEARTBEAT_INTERVAL = 0.5  # toggle every 0.5s = 1 Hz blink
 READER_BLINK_DURATION = 0.1
