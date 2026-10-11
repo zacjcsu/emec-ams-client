@@ -5,6 +5,7 @@ import threading
 import time
 import psycopg
 from db.server_sync import UTC_NOW, get_server_connection
+from utils.timeutil import set_server_time
 from config.constants import (CONTACTOR_SWITCH, HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS,
                               UPDATE_AFTER_SESSION)
 
@@ -23,6 +24,7 @@ class HeartbeatMonitor:
       doesn't restart mid-session when it reconnects.
     * update: if machine.update_requested_at is later than when this process started, write UPDATE_AFTER_SESSION.
       The main loop updates once no session is open. The update restarts the app, so a request is honoured once.
+      Unlike a restart, it has no age limit: a Pi that was offline still updates when it's back.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
     * contactor switch: set machine.contactor_switch from the config once. The dashboard only shows the
@@ -59,12 +61,15 @@ class HeartbeatMonitor:
                     conn.autocommit = True
                     if self._started_at is None:
                         self._started_at = conn.execute(f"SELECT {UTC_NOW} AS t").fetchone()["t"]
+                        set_server_time(self._started_at)
                 now = time.monotonic()
 
                 if last_beat is None or now - last_beat >= HEARTBEAT_PUSH_SECONDS:
-                    conn.execute(
-                        f"UPDATE machine SET last_heartbeat = {UTC_NOW} WHERE machine_id = %s",
-                        (self.machine_id,))
+                    row = conn.execute(
+                        f"UPDATE machine SET last_heartbeat = {UTC_NOW} WHERE machine_id = %s RETURNING last_heartbeat AS t",
+                        (self.machine_id,)).fetchone()
+                    if row:
+                        set_server_time(row["t"])
                     last_beat = now
 
                 if not self._switch_reported:

@@ -96,6 +96,7 @@ PULL_QUERIES = {
 def sync_local_from_server():
     """Replace the local cache tables with the server's. All or nothing: raises on any failure so
     the caller never runs on a half-updated permission set."""
+    pushed = push_access_requests()
     pulled = {}
     conn_pg = get_server_connection()
     try:
@@ -111,6 +112,8 @@ def sync_local_from_server():
 
     with _local() as conn_local, conn_local:  # one transaction: commit on success, roll back on error
         for table, rows in pulled.items():
+            if table == "Access_Requests" and not pushed:
+                continue   # keep requests raised offline until the server has them
             conn_local.execute(f"DELETE FROM {table}")
             if rows:
                 keys = list(rows[0].keys())
@@ -154,6 +157,9 @@ def _upsert_session(cur_pg, row):
         (end_time, duration, session_id),
     )
     if cur_pg.rowcount == 0:
+        # The Pi can't update a row the server already closed, so it looks missing. Don't add it twice.
+        if cur_pg.execute("SELECT 1 FROM machine_usage WHERE session_id = %s", (session_id,)).fetchone():
+            return
         cur_pg.execute(
             f"INSERT INTO machine_usage ({_SESSION_COLS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (session_id, csu_id, machine_id, machine_type, start_time, end_time, duration, card_uid),
@@ -283,14 +289,15 @@ def push_user_update(csu_id):
 
 def push_access_requests():
     """Send this machine's locally raised requests to the server. The server assigns request_id
-    (local ids would collide across Pis), and a request already under review is not duplicated."""
+    (local ids would collide across Pis), and a request already under review is not duplicated.
+    False if they couldn't be sent."""
     try:
         with _local() as conn_local:
             requests = conn_local.execute(
                 "SELECT uid, csu_id, machine_id, machine_type, requested_on FROM Access_Requests "
                 "WHERE status = 'under review' AND machine_id = ?", (MACHINE_ID,)).fetchall()
         if not requests:
-            return
+            return True
 
         with get_server_connection() as conn:
             with conn.cursor() as cur_pg:
@@ -303,8 +310,10 @@ def push_access_requests():
                         {"uid": uid, "csu": csu_id, "mid": machine_id, "mt": machine_type, "ts": requested_on},
                     )
         logger.info("[SYNC] Access requests synced to server")
+        return True
     except Exception as e:
         logger.error(f"[SYNC] Access request sync failed: {e}")
+        return False
 
 
 # ---------------------------------------------------------------- temporary cards

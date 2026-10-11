@@ -110,7 +110,7 @@ class LockoutMonitor:
     def _relay_should_lock(self):
         return self.estop_active or (self.maintenance_active and not self.bypass_maintenance)
 
-    def _set_estop(self, active):
+    def set_estop(self, active):
         if active == self.estop_active:
             return
         self.estop_active = active
@@ -183,7 +183,7 @@ class LockoutMonitor:
                 row = conn.execute(
                     "SELECT value FROM system_settings WHERE setting = 'emergency_shutdown'"
                 ).fetchone()
-                self._set_estop(bool(row) and str(row["value"]).strip().lower() == "true")
+                self.set_estop(bool(row) and str(row["value"]).strip().lower() == "true")
 
                 mrow = conn.execute(
                     "SELECT machine_status FROM machine WHERE machine_id = %s", (self.machine_id,)

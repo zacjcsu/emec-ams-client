@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from datetime import datetime, timezone
+from utils.timeutil import utc_now
 
 REPEAT_SECONDS = 60
 QUEUE_SIZE = 200          # kept while the server is unreachable. The oldest are dropped first.
@@ -35,7 +35,7 @@ class EventHandler(logging.Handler):
             return
         try:
             code = code or re.sub(r"[^a-z0-9_]", "_", record.name.lower())[:40] or "app"
-            row = (datetime.now(timezone.utc), record.levelname, code, _message(record))
+            row = (utc_now(), record.levelname, code, _message(record))
         except Exception:
             return
         now = time.monotonic()

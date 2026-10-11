@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from utils.timeutil import utc_now
 
 import RPi.GPIO as GPIO
 
@@ -57,7 +57,7 @@ class PowerMonitor:
             elif seen != state and time.monotonic() - since >= CONTACTOR_SETTLE_SECONDS:
                 state = seen
                 logger.info(f"[POWER] Machine {'on' if state else 'off'} (relay {'on' if self.relay.is_on else 'off'})")
-                self._queue.append((state, datetime.now(timezone.utc), self.relay.is_on))
+                self._queue.append((state, utc_now(), self.relay.is_on))
             if self._queue and time.monotonic() >= retry_at:
                 try:
                     self._send()

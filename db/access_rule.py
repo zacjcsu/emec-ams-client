@@ -4,8 +4,10 @@ against the server's reference cases.
 
 Rule order, first match wins: unknown_user, user_disabled, group_disabled, no_permission, lab_hours, level, outside_hours.
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from utils.timeutil import utc_now
 
 DEFAULT_TZ = "America/Denver"
 ALL_DAYS = frozenset(range(1, 8))
@@ -49,7 +51,7 @@ def in_window(days, start, end, local):
 
 def local_now(tz_name, at=None):
     """`at` (aware datetime, default now) as naive wall-clock time in the lab timezone."""
-    at = at or datetime.now(timezone.utc)
+    at = at or utc_now()
     try:
         zone = ZoneInfo(tz_name or DEFAULT_TZ)
     except Exception:

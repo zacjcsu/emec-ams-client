@@ -81,7 +81,10 @@ class Attended:
             time.sleep(0.5)
 
     def _grace_period(self, session, reader):
-        grace_period = int(session.db.get_setting("grace_period_seconds", default=CARD_GRACE_PERIOD_DEFAULT))
+        try:
+            grace_period = int(session.db.get_setting("grace_period_seconds", default=CARD_GRACE_PERIOD_DEFAULT))
+        except (TypeError, ValueError):
+            grace_period = CARD_GRACE_PERIOD_DEFAULT
         end_time = time.time() + grace_period
         while time.time() < end_time:
             reason = self._ended_by_lockout(session, reader)

@@ -117,6 +117,8 @@ def main():
         recover_orphaned_sessions(db)
     except Exception:
         logger.exception("[MAIN] Could not recover unfinished sessions.")
+    # The last synced setting, until the server answers. Booting offline must not lift an emergency shutdown.
+    lockout.set_estop(str(db.get_setting("emergency_shutdown", "")).strip().lower() == "true")
     lockout.start()
     heartbeat.start()
     activity.start()

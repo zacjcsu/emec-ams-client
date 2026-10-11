@@ -33,7 +33,9 @@ KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
 
 # Written to ${APP_DIR}/.env at mode 600. Prompted for, or passed as env vars.
-# This file is public, so only the CA path keeps a default.
+# This file is public, so the host, user and password have no default.
+# Every Pi shares the ams_pi password. If a Pi is lost, change it on the server, then on each Pi set DB_PASS
+# in ${APP_DIR}/.env and restart emec-ams.
 DEF_DB_PORT="5432"
 DEF_DB_NAME="emec_access"
 
@@ -504,7 +506,7 @@ import importlib
 
 # Import check.
 FAKEABLE = ("RPi.GPIO", "smbus2", "mfrc522", "spidev")
-OTHER = ("dotenv", "dateutil", "psycopg")
+OTHER = ("dotenv", "psycopg")
 
 faked, missing, hardware = [], [], []
 for group, dest in ((FAKEABLE, faked), (OTHER, missing)):

@@ -1,6 +1,6 @@
 import time
 import logging
-from db.server_sync import sync_local_from_server, push_access_requests, push_user_update, remote_access_decision
+from db.server_sync import sync_local_from_server, push_user_update, remote_access_decision
 from config.constants import MACHINE_ID
 from utils.startup_check import startup_sequence
 from config.constants import LCD_LINE_DELAY
@@ -42,8 +42,7 @@ def validate_card(csu_id, uid_num, db, lcd, temp=False, hold_until_removed=None)
             lcd.display("Already sent", "Please wait", color="red")
             logger.info(f"[ACCESS] Request already exists for {csu_id}")
         else:
-            db.insert_access_request(csu_id, MACHINE_ID, uid_fallback=uid_num)
-            push_access_requests()
+            db.insert_access_request(csu_id, MACHINE_ID, uid_fallback=uid_num)   # startup_sequence below sends it
             lcd.display("Request raised", "Please wait", color="yellow")
             logger.info(f"[ACCESS] Request raised for {csu_id}")
         time.sleep(LCD_LINE_DELAY)
