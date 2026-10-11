@@ -278,7 +278,9 @@ install_python_deps() {
         grep -viE '^[[:space:]]*mfrc522([[:space:]]|;|$|[<>=!])' "$req" >"$tmp" || true
         as_app "${VENV_DIR}/bin/pip" install -q -r "$tmp" || log "WARNING: pip install failed."
         rm -f "$tmp"
-        as_app "${VENV_DIR}/bin/pip" install -q --no-deps mfrc522 || log "WARNING: mfrc522 install failed."
+        local spec
+        spec="$(grep -iE '^[[:space:]]*mfrc522([[:space:]]|;|$|[<>=!])' "$req" | head -1 | cut -d';' -f1 | tr -d '[:space:]')"
+        as_app "${VENV_DIR}/bin/pip" install -q --no-deps "$spec" || log "WARNING: mfrc522 install failed."
         # pip's "mfrc522 requires RPi.GPIO" notice is expected here.
         log "(pip's 'mfrc522 requires RPi.GPIO' notice is expected; apt's rpi-lgpio provides it.)"
     else

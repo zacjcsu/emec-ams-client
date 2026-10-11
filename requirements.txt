@@ -1,4 +1,4 @@
-python-dotenv
-psycopg[binary]
-mfrc522; sys_platform == "linux"
-smbus2
+python-dotenv==1.2.3
+psycopg[binary]==3.3.6
+mfrc522==0.0.7; sys_platform == "linux"
+smbus2==0.4.3

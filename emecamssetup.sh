@@ -473,7 +473,8 @@ elif grep -qiE '^[[:space:]]*mfrc522([[:space:]]|;|$|[<>=!])' "$REQ"; then
     "${VENV_DIR}/bin/pip" install -q -r "$REQ_TMP" \
         || die "pip install failed. Scroll up for the failing package."
     rm -f "$REQ_TMP"
-    "${VENV_DIR}/bin/pip" install -q --no-deps mfrc522 \
+    MFRC_SPEC="$(grep -iE '^[[:space:]]*mfrc522([[:space:]]|;|$|[<>=!])' "$REQ" | head -1 | cut -d';' -f1 | tr -d '[:space:]')"
+    "${VENV_DIR}/bin/pip" install -q --no-deps "$MFRC_SPEC" \
         || die "pip install of mfrc522 failed."
     ok "Requirements installed (mfrc522 --no-deps, GPIO via apt rpi-lgpio)"
     info "pip's 'mfrc522 requires RPi.GPIO' ERROR above is expected and harmless:"
