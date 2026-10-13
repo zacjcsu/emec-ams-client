@@ -140,8 +140,6 @@ ask_secret() {
     die "Too many failed attempts."
 }
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-
 # ---------------------------------------------------------------------------
 # 0. Preflight
 # ---------------------------------------------------------------------------
@@ -418,13 +416,19 @@ EOF
     ok ".env written (mode 600)"
 fi
 
-cat >"${APP_DIR}/config/config.json" <<EOF
-{
-  "machine_id": "$(json_escape "$MACHINE_ID")",
-  "machine_name": "$(json_escape "$MACHINE_NAME")",
-  "machine_type": "$(json_escape "$MACHINE_TYPE")"
-}
-EOF
+# Other keys already in the file, such as kind, contactor_switch and machine_data, are kept.
+python3 - "${APP_DIR}/config/config.json" "$MACHINE_ID" "$MACHINE_NAME" "$MACHINE_TYPE" <<'PY'
+import json, sys
+path, machine_id, name, machine_type = sys.argv[1:]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+data.update(machine_id=machine_id, machine_name=name, machine_type=machine_type)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
 ok "config/config.json written"
 
 # Keep secrets and per-Pi state out of git if this is a clone.
