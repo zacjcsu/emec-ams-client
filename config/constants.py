@@ -41,6 +41,18 @@ MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, MACHINE_KIND, CONTACTOR_SWITCH, CONTACTO
 MACHINE_ID = MACHINE_ID.casefold()
 
 
+def load_machine_data_config():
+    """How to read a CNC's control, from "machine_data" in config.json, or None.
+    "control" picks the reader (CONTROLS in main.py). The other keys are that reader's settings."""
+    try:
+        with open("config/config.json", "r") as f:
+            data = json.load(f).get("machine_data")
+    except Exception:
+        return None   # load_machine_config has already warned
+    return dict(data) if isinstance(data, dict) else None
+
+MACHINE_DATA = load_machine_data_config()
+
 # === Relay and Card Constants ===
 RELAY_PIN = 11
 LED_READER_PIN = 16       # GPIO23, D1

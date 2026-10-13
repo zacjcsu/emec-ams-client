@@ -150,12 +150,20 @@ class Attended:
             time.sleep(0.5)
 
 
+class Cnc(Attended):
+    """CNC machines, whatever the control. Sessions run as on a lathe, but the relay only enables cycle start.
+    A program that is running keeps going after the session ends, and after access is lost.
+    Reading the control is separate, set by "machine_data" in config.json."""
+
+    name = "cnc"
+
+
 def _time_left(seconds):
     minutes = max(1, math.ceil(seconds / 60))
     return f"{minutes // 60}h{minutes % 60:02d}m left" if minutes >= 60 else f"{minutes}m left"
 
 
-KINDS = {kind.name: kind for kind in (Attended,)}
+KINDS = {kind.name: kind for kind in (Attended, Cnc)}
 
 
 def load_kind(name=MACHINE_KIND):

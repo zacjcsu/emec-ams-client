@@ -14,12 +14,13 @@ from utils.idle_display import IdleDisplay
 from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
 from utils.power_monitor import PowerMonitor
+from utils.haas_mdc import HaasMonitor
 import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_ID, STATUS_MAINTENANCE, STATUS_OFFLINE,
-                              UPDATE_AFTER_SESSION, UPDATE_FLAG)
+from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_DATA, MACHINE_ID, STATUS_MAINTENANCE,
+                              STATUS_OFFLINE, UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -61,6 +62,22 @@ heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
+CONTROLS = {"haas-ngc": HaasMonitor}   # "control" in config.json's machine_data
+
+
+def make_machine_data():
+    if not MACHINE_DATA:
+        return None
+    options = dict(MACHINE_DATA)
+    control = options.pop("control", None)
+    try:
+        return CONTROLS[control](**options)
+    except Exception:
+        logger.exception(f"[MAIN] Cannot read the machine's control. Check machine_data in config.json: {MACHINE_DATA}")
+        return None
+
+
+machine_data = make_machine_data()
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 
@@ -124,6 +141,8 @@ def main():
     activity.start()
     if power:
         power.start()
+    if machine_data:
+        machine_data.start()
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD
     while True:
         try:
