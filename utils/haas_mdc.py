@@ -269,24 +269,36 @@ class HaasMonitor:
             except (OSError, ValueError) as e:
                 self.log.info(f"MTConnect {page}: {e}")
 
+    def _mtconnect_page(self, page):
+        """The page and its next sequence number, which is None on an MTConnectError."""
+        with urllib.request.urlopen(f"http://{self.client.host}:{MTCONNECT_PORT}/{page}", timeout=2) as r:
+            root = ET.fromstring(r.read())
+        header = root.find(".//{*}Header")
+        next_ = header.get("nextSequence") if header is not None else None
+        return root, int(next_) if next_ else None
+
     def _mtconnect_changes(self):
         """Log every MTConnect change since the last read. The control keeps the last 333, numbered in order."""
-        page = f"sample?from={self._mtc_next}&count=1000" if self._mtc_next else "current"
         try:
-            with urllib.request.urlopen(f"http://{self.client.host}:{MTCONNECT_PORT}/{page}", timeout=2) as r:
-                root = ET.fromstring(r.read())
-            header = root.find(".//{*}Header")
-            if header is None:   # an MTConnectError, e.g. after the control restarted and renumbered
-                raise ValueError(ET.tostring(root, encoding="unicode")[:200])
-            first, next_ = int(header.get("firstSequence")), int(header.get("nextSequence"))
-        except (OSError, ValueError, ET.ParseError, TypeError) as e:
+            next_ = None
+            if self._mtc_next:
+                root, next_ = self._mtconnect_page(f"sample?from={self._mtc_next}&count=1000")
+            current = next_ is None
+            if current:
+                # The Haas answers OUT_OF_RANGE both when nothing is new and when changes were missed.
+                root, next_ = self._mtconnect_page("current")
+                if next_ is None:
+                    raise ValueError(ET.tostring(root, encoding="unicode")[:200])
+        except (OSError, ValueError, ET.ParseError) as e:
             if not self._mtc_failing:
                 self.log.info(f"MTConnect: {e}")
             self._mtc_failing, self._mtc_next = True, None
             return
         self._mtc_failing = False
-        if self._mtc_next and first > self._mtc_next:
-            self.log.info(f"MTConnect: missed changes {self._mtc_next} to {first - 1}")
+        if current and next_ == self._mtc_next:
+            return
+        if current and self._mtc_next:
+            self.log.info(f"MTConnect: missed changes from {self._mtc_next}")
         items = sorted((int(e.get("sequence")), e) for e in root.iter() if e.get("sequence"))
         for seq, e in items:
             tag = e.tag.split("}")[-1]
@@ -294,7 +306,7 @@ class HaasMonitor:
             if e.get("type"):   # a condition: Normal, Warning or Fault, with the alarm's text
                 value = f"{tag} {value}".strip()
             self.log.info(f"MTConnect {e.get('name') or e.get('dataItemId')} = {value!r}  at {e.get('timestamp')}"
-                          + ("" if self._mtc_next else "  (current)"))
+                          + ("  (current)" if current else ""))
         self._mtc_next = next_
 
     def _run(self):

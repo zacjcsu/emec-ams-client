@@ -72,11 +72,17 @@ CHANGES = [(1, '<Execution dataItemId="rstat" name="RunStatus" sequence="1" time
 
 class FakeMTConnect(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        start = int(self.path.split("from=")[1].split("&")[0]) if "from=" in self.path else 0
+        first, next_ = CHANGES[0][0], CHANGES[-1][0] + 1
+        start = int(self.path.split("from=")[1].split("&")[0]) if "from=" in self.path else first
         rows = CHANGES if self.path == "/current" else [c for c in CHANGES if c[0] >= start]
-        body = ('<MTConnectStreams xmlns="urn:mtconnect.org:MTConnectStreams:1.2">'
-                f'<Header firstSequence="1" nextSequence="{CHANGES[-1][0] + 1}"/><Streams><DeviceStream>'
-                + "".join(r[1] for r in rows) + "</DeviceStream></Streams></MTConnectStreams>").encode()
+        if not first <= start < next_:   # like the Haas, also when nothing is new yet
+            body = ('<MTConnectError xmlns="urn:mtconnect.org:MTConnectError:1.2"><Header bufferSize="333"/>'
+                    f'<Errors><Error errorCode="OUT_OF_RANGE">from must be at least {first}</Error></Errors>'
+                    '</MTConnectError>').encode()
+        else:
+            body = ('<MTConnectStreams xmlns="urn:mtconnect.org:MTConnectStreams:1.2">'
+                    f'<Header firstSequence="{first}" nextSequence="{next_}"/><Streams><DeviceStream>'
+                    + "".join(r[1] for r in rows) + "</DeviceStream></Streams></MTConnectStreams>").encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -133,6 +139,12 @@ CHANGES.append((3, '<Fault dataItemId="mcond" name="MachineCondition" type="SYST
 check("an MTConnect change is logged once", wait_for(lambda: "MachineCondition = 'Fault 107 EMERGENCY OFF'" in log())
       and (time.sleep(0.5) or log().count("EMERGENCY OFF") == 1))
 check("old MTConnect changes are not logged again", log().count("RunStatus = 'STOPPED'") == 1)
+check("nothing new is not logged as an error", "MTConnect: " not in log())
+
+CHANGES[:] = [(seq + 10, row.replace(f'sequence="{seq}"', f'sequence="{seq + 10}"')) for seq, row in CHANGES]
+check("missed changes reread the current values",
+      wait_for(lambda: "MTConnect: missed changes from 4" in log())
+      and wait_for(lambda: log().count("RunStatus = 'STOPPED'") == 2))
 
 control.drop.set()
 check("a lost link is noticed", wait_for(lambda: "disconnected" in log()))
