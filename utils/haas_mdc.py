@@ -218,13 +218,14 @@ class TcpClient(HaasClient):
 
 
 class SerialClient(HaasClient):
-    """An RS-232 port, through a USB adapter and a null modem cable."""
+    """An RS-232 port, through a USB adapter and a null modem cable. Also an RS-485 port, with xonxoff off."""
 
     framed = True
     PARITY = {"none": 0, "even": termios.PARENB, "odd": termios.PARENB | termios.PARODD}
 
-    def __init__(self, device, baud=9600, parity="none", data_bits=8, stop_bits=1):
+    def __init__(self, device, baud=9600, parity="none", data_bits=8, stop_bits=1, xonxoff=True):
         self.name = self.device = str(device)
+        self.xonxoff = xonxoff
         self.speed = getattr(termios, f"B{int(baud)}")
         self.cflag = (self.PARITY[str(parity).lower()] | {7: termios.CS7, 8: termios.CS8}[int(data_bits)]
                       | {1: 0, 2: termios.CSTOPB}[int(stop_bits)])
@@ -233,7 +234,8 @@ class SerialClient(HaasClient):
     def connect(self):
         self.close()
         self.fd = os.open(self.device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-        iflag = termios.IXON | termios.IXOFF | (termios.INPCK if self.cflag & termios.PARENB else 0)
+        iflag = ((termios.IXON | termios.IXOFF if self.xonxoff else 0)
+                 | (termios.INPCK if self.cflag & termios.PARENB else 0))
         cc = termios.tcgetattr(self.fd)[6]
         cc[termios.VMIN] = cc[termios.VTIME] = 0
         try:

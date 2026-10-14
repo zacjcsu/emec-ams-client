@@ -18,6 +18,7 @@ from utils.program_send import ProgramSender
 from utils.power_monitor import PowerMonitor
 from utils.haas_mdc import HaasMonitor
 from utils.live_state import LiveState
+from utils.yaskawa_v1000 import V1000Monitor
 import time
 import signal
 import sys
@@ -68,9 +69,9 @@ lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
-power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
 programs = ProgramSync(MACHINE_ID) if PROGRAM_FOLDER else None
-CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic}   # "control" in machine_data
+CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic,   # "control" in machine_data
+            "yaskawa-v1000": V1000Monitor}
 
 
 def make_machine_data():
@@ -86,8 +87,15 @@ def make_machine_data():
 
 
 machine_data = make_machine_data()
-live = LiveState(MACHINE_ID, machine_data) if machine_data else None
-sender = ProgramSender(MACHINE_ID, machine_data) if machine_data and machine_data.can_send else None
+haas = machine_data if isinstance(machine_data, HaasMonitor) else None
+live = LiveState(MACHINE_ID, haas) if haas else None
+sender = ProgramSender(MACHINE_ID, haas) if haas and haas.can_send else None
+if CONTACTOR_SWITCH:
+    power = PowerMonitor(MACHINE_ID, relay)
+elif isinstance(machine_data, V1000Monitor):
+    power = PowerMonitor(MACHINE_ID, relay, read=lambda: machine_data.running)
+else:
+    power = None
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 
@@ -153,6 +161,7 @@ def main():
         power.start()
     if machine_data:
         machine_data.start()
+    if live:
         live.start()
     if sender:
         sender.start()
