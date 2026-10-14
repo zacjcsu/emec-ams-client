@@ -78,6 +78,7 @@ class Attended:
             elif time.time() - absence_start >= self.CARD_GONE_SECONDS:
                 session.show("Card removed", "Waiting for reinsert", color="yellow")
                 return "removed"
+            session.lcd.refresh()
             time.sleep(0.5)
 
     def _grace_period(self, session, reader):
@@ -147,6 +148,8 @@ class Attended:
             if line2 != shown:
                 session.lcd.display(session.display_name[:16], line2, color="green")
                 shown = line2
+            else:
+                session.lcd.refresh()
             time.sleep(0.5)
 
 

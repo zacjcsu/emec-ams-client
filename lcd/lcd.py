@@ -16,15 +16,17 @@ COLORS = {
 
 class LCD:
     """A screen that stops answering is marked `down` instead of raising. It is set up again every
-    SCREEN_RETRY_SECONDS. The machine keeps running meanwhile."""
+    SCREEN_RETRY_SECONDS, on the next `display` or `refresh`. The machine keeps running meanwhile."""
 
     def __init__(self):
         self.lcd = RGB1602(16, 2)
         self.needs_setup = True
         self.down = False
         self._tried = 0
+        self._last = ("", "", "white")
 
     def display(self, line1="", line2="", color="white"):
+        self._last = (line1, line2, color)
         if self.down and (time.monotonic() - self._tried < SCREEN_RETRY_SECONDS or not self.retry()):
             return
         try:
@@ -43,6 +45,11 @@ class LCD:
             self.down = True
             self._tried = time.monotonic()
             logger.error(f"[LCD] Screen not answering: {e}", extra={"code": "lcd_down"})
+
+    def refresh(self):
+        """Redraw the last message once a screen that stopped answering is back. For loops that draw only on change."""
+        if self.down:
+            self.display(*self._last)
 
     def retry(self):
         """Set the screen up again. True once it answers."""
