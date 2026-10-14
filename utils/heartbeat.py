@@ -29,7 +29,7 @@ class HeartbeatMonitor:
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
     * contactor switch: set machine.contactor_switch from the config once. The dashboard only shows the
       spindle and checks for contactor faults when it's on.
-    * program folder: set machine.program_share once. The CNC tab only takes programs for a machine with one.
+    * program folder: set machine.program_share once. The dashboard only takes programs for a machine with one.
     """
 
     def __init__(self, machine_id, screen=None, events=None):

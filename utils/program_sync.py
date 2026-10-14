@@ -1,4 +1,5 @@
-"""Copies the CNC programs uploaded on the dashboard's CNC tab into PROGRAM_FOLDER, which Samba shares with the control.
+"""Copies the CNC programs uploaded in the dashboard's machine popup into PROGRAM_FOLDER, which Samba shares with the
+control.
 
 The dashboard's list wins for the files it put there: a new upload replaces the file, and a deleted one goes. Files the
 control saved there itself are left alone, and so is one of ours it edited, until the dashboard has a new version.
