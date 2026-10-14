@@ -53,6 +53,20 @@ def load_machine_data_config():
 
 MACHINE_DATA = load_machine_data_config()
 
+
+def load_program_folder():
+    """Where the CNC programs from the dashboard go, from "program_folder" in config.json. Off unless it exists."""
+    try:
+        with open("config/config.json", "r") as f:
+            folder = json.load(f).get("program_folder", "/home/emec/haas-programs")
+    except Exception:
+        folder = "/home/emec/haas-programs"
+    return folder if folder and os.path.isdir(folder) else None
+
+PROGRAM_FOLDER = load_program_folder()
+PROGRAM_MANIFEST = "data/programs.json"
+PROGRAM_POLL_SECONDS = 5
+
 # === Relay and Card Constants ===
 RELAY_PIN = 11
 LED_READER_PIN = 16       # GPIO23, D1

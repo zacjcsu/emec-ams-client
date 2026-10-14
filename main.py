@@ -13,14 +13,15 @@ from utils.leds import StatusLEDs
 from utils.idle_display import IdleDisplay
 from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
+from utils.program_sync import ProgramSync
 from utils.power_monitor import PowerMonitor
 from utils.haas_mdc import HaasMonitor
 import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_DATA, MACHINE_ID, STATUS_MAINTENANCE,
-                              STATUS_OFFLINE, UPDATE_AFTER_SESSION, UPDATE_FLAG)
+from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_DATA, MACHINE_ID, PROGRAM_FOLDER,
+                              STATUS_MAINTENANCE, STATUS_OFFLINE, UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -62,6 +63,7 @@ heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
+programs = ProgramSync(MACHINE_ID) if PROGRAM_FOLDER else None
 CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic}   # "control" in machine_data
 
 
@@ -143,6 +145,8 @@ def main():
         power.start()
     if machine_data:
         machine_data.start()
+    if programs:
+        programs.start()
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD
     while True:
         try:
