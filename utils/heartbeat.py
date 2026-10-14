@@ -6,7 +6,7 @@ import time
 import psycopg
 from db.server_sync import UTC_NOW, get_server_connection
 from utils.timeutil import set_server_time
-from config.constants import (CONTACTOR_SWITCH, HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS,
+from config.constants import (HEARTBEAT_PUSH_SECONDS, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS, SPINDLE_SENSED,
                               UPDATE_AFTER_SESSION)
 
 logger = logging.getLogger("heartbeat")
@@ -27,8 +27,8 @@ class HeartbeatMonitor:
       Unlike a restart, it has no age limit: a Pi that was offline still updates when it's back.
     * screen: set machine.screen_down_since while `screen` (lcd.LCD) is down, and clear it once it answers.
     * events: send the log's warnings and errors queued by `events` (utils/pi_events.py).
-    * contactor switch: set machine.contactor_switch from the config once. The dashboard only shows the
-      spindle and checks for contactor faults when it's on.
+    * contactor switch: set machine.contactor_switch once, to whether the Pi knows when the spindle runs, from a
+      contactor switch or the drive. The dashboard only shows the spindle and checks for contactor faults when it's on.
     """
 
     def __init__(self, machine_id, screen=None, events=None):
@@ -75,7 +75,7 @@ class HeartbeatMonitor:
                 if not self._switch_reported:
                     try:
                         conn.execute("UPDATE machine SET contactor_switch = %s WHERE machine_id = %s",
-                                     (CONTACTOR_SWITCH, self.machine_id))
+                                     (SPINDLE_SENSED, self.machine_id))
                     except psycopg.OperationalError:
                         raise
                     except Exception as e:

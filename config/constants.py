@@ -42,8 +42,9 @@ MACHINE_ID = MACHINE_ID.casefold()
 
 
 def load_machine_data_config():
-    """How to read a CNC's control, from "machine_data" in config.json, or None.
-    "control" picks the reader (CONTROLS in main.py). The other keys are that reader's settings."""
+    """How to read the machine, from "machine_data" in config.json, or None.
+    "control" picks the reader (CONTROLS in main.py), or "contactor" for a contactor switch. The other keys are its
+    settings."""
     try:
         with open("config/config.json", "r") as f:
             data = json.load(f).get("machine_data")
@@ -52,6 +53,15 @@ def load_machine_data_config():
     return dict(data) if isinstance(data, dict) else None
 
 MACHINE_DATA = load_machine_data_config()
+
+# A contactor switch can also be set as "machine_data": {"control": "contactor", "pin": 40, "inverted": true}.
+if MACHINE_DATA and MACHINE_DATA.get("control") == "contactor":
+    CONTACTOR_SWITCH = True
+    CONTACTOR_INVERTED = bool(MACHINE_DATA.get("inverted", False))
+    CONTACTOR_PIN = int(MACHINE_DATA.get("pin", 37))
+    MACHINE_DATA = None
+# The Pi knows when the spindle runs, from a contactor switch or the drive (utils/power_monitor.py).
+SPINDLE_SENSED = CONTACTOR_SWITCH or bool(MACHINE_DATA and MACHINE_DATA.get("control") == "yaskawa-v1000")
 
 # === Relay and Card Constants ===
 RELAY_PIN = 11

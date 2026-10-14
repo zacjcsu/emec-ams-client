@@ -15,6 +15,7 @@ from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
 from utils.power_monitor import PowerMonitor
 from utils.haas_mdc import HaasMonitor
+from utils.yaskawa_v1000 import V1000Monitor
 import time
 import signal
 import sys
@@ -61,8 +62,8 @@ lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
-power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
-CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic}   # "control" in machine_data
+CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic,   # "control" in machine_data
+            "yaskawa-v1000": V1000Monitor}
 
 
 def make_machine_data():
@@ -78,6 +79,12 @@ def make_machine_data():
 
 
 machine_data = make_machine_data()
+if CONTACTOR_SWITCH:
+    power = PowerMonitor(MACHINE_ID, relay)
+elif isinstance(machine_data, V1000Monitor):
+    power = PowerMonitor(MACHINE_ID, relay, read=lambda: machine_data.running)
+else:
+    power = None
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 

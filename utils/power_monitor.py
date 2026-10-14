@@ -13,7 +13,8 @@ logger = logging.getLogger("power")
 
 
 class PowerMonitor:
-    """Watches normally closed microswitches on the machine's contactors and records when the machine is on.
+    """Records when the machine is on. By default it watches normally closed microswitches on the machine's contactors.
+    With `read`, it records what that returns instead, such as whether the drive is running (utils/yaskawa_v1000.py).
 
     The switches are wired in series between CONTACTOR_PIN and ground, with the internal pull-up. They are closed
     while the contactors are out, so the pin reads low when the machine is off. A pulled-in contactor or a broken wire reads
@@ -27,14 +28,17 @@ class PowerMonitor:
     At start the current state is reported once, which closes a row left open while the app was down.
     """
 
-    def __init__(self, machine_id, relay):
+    def __init__(self, machine_id, relay, read=None):
         self.machine_id = machine_id
         self.relay = relay
         self._queue = deque(maxlen=1000)   # (on, at, relay_on)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="power", daemon=True)
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(CONTACTOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        if read:
+            self._read = read
+        else:
+            GPIO.setmode(GPIO.BOARD)
+            GPIO.setup(CONTACTOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     def start(self):
         self._thread.start()
