@@ -62,7 +62,7 @@ heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 power = PowerMonitor(MACHINE_ID, relay) if CONTACTOR_SWITCH else None
-CONTROLS = {"haas-ngc": HaasMonitor}   # "control" in config.json's machine_data
+CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic}   # "control" in machine_data
 
 
 def make_machine_data():

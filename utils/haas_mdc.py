@@ -1,17 +1,25 @@
-"""Reads a Haas NGC control's machine data over TCP and logs it to logs/machine_data.log.
+"""Reads a Haas control's machine data and logs it to logs/machine_data.log.
 
-The control answers Q commands on the port in its Setting 143 and sends nothing unprompted. Each answer is logged
+The NGC answers Q commands over TCP on the port in its Setting 143. The classic control (Coldfire, Maincon) answers
+the same commands on its RS-232 port when Setting 143 is On. Neither sends anything unprompted. Each answer is logged
 when it changes, with the raw bytes, and every command is logged again every SNAPSHOT_SECONDS. Nothing acts on the
 values yet. The log is for working out what this control reports.
 
-On each connect it also asks a wider set once (DISCOVER) and saves the control's MTConnect pages, if it serves them,
-as logs/mtconnect-probe.xml and logs/mtconnect-current.xml.
+On each connect it also asks a wider set once (DISCOVER_NGC or DISCOVER_CLASSIC). An NGC's MTConnect pages are saved
+as logs/mtconnect-probe.xml and logs/mtconnect-current.xml, if it serves them.
 
-Set it up in config.json: "machine_data": {"control": "haas-ngc", "host": "192.168.50.2", "port": 5051}.
+Set it up in config.json:
+    "machine_data": {"control": "haas-ngc", "host": "192.168.50.2", "port": 5051}
+    "machine_data": {"control": "haas-classic", "device": "/dev/serial/by-id/usb-FTDI_...", "baud": 9600}
+The classic reader also takes "parity" ("none", "even" or "odd"), "data_bits" and "stop_bits", which must match
+Settings 12, 37 and 13. It always uses XON/XOFF, Setting 14.
 """
 import logging
+import os
 import re
+import select
 import socket
+import termios
 import threading
 import time
 import urllib.request
@@ -41,11 +49,12 @@ SLOW = (
     "Q600 3030",   # single block
 )
 # Asked once per connect, to see what answers. Unknown commands get "UNKNOWN".
-DISCOVER = (
-    tuple(f"Q{n}" for n in (*range(100, 106), *range(200, 204), *range(300, 306), *range(400, 404), 500, 501))
-    + tuple(f"Q600 {n}" for n in (*range(3000, 3036), 3901, 3902, *range(4001, 4022), *range(5021, 5027),
-                                  *range(5041, 5047), 1094, 1098, 13013))
-)
+_Q = tuple(f"Q{n}" for n in (*range(100, 106), *range(200, 204), *range(300, 306), *range(400, 404), 500, 501))
+_VARS = (*range(3000, 3036), 3901, 3902, *range(4001, 4022), *range(5021, 5027), *range(5041, 5047), 1094, 1098)
+DISCOVER_NGC = _Q + tuple(f"Q600 {n}" for n in (*_VARS, 13013))
+# Classic I/O: #1000-1063 discrete inputs, #1080-1097 analog inputs, #1100-1155 discrete outputs.
+DISCOVER_CLASSIC = _Q + tuple(f"Q600 {n}" for n in (*_VARS, *range(1000, 1064), *range(1080, 1098),
+                                                    *range(1100, 1156)))
 MTCONNECT_PORT = 8082
 SNAPSHOT_SECONDS = 300
 RETRY_SECONDS = 10
@@ -61,10 +70,51 @@ def clean(raw):
 
 
 class HaasClient:
-    """One TCP connection to the control. Not thread safe."""
+    """One link to the control. Not thread safe. Subclasses open the link and move the bytes."""
 
+    name = ""
+
+    def connect(self):
+        raise NotImplementedError
+
+    def close(self):
+        raise NotImplementedError
+
+    def _recv(self, timeout):
+        """Bytes that arrive within timeout, b'' if none. Raises ConnectionError if the link closed."""
+        raise NotImplementedError
+
+    def _send(self, data):
+        raise NotImplementedError
+
+    def _drain(self):
+        """Drop late bytes from an earlier answer, so they aren't read as this one."""
+        while self._recv(0):
+            pass
+
+    def ask(self, command):
+        """Send '?<command>' and return the raw answer, b'' if none came. Raises OSError if the link is down."""
+        self._drain()
+        self._send(f"?{command}\r\n".encode("ascii"))
+        raw = b""
+        deadline = time.monotonic() + ANSWER_SECONDS
+        while time.monotonic() < deadline:
+            wait = QUIET_SECONDS if raw else deadline - time.monotonic()
+            chunk = self._recv(max(0.01, min(wait, deadline - time.monotonic())))
+            if not chunk:
+                if raw:
+                    break
+                continue
+            raw += chunk
+            if clean(raw) and raw.rstrip(b" ").endswith((b"\n", b">")):
+                break
+        return raw
+
+
+class TcpClient(HaasClient):
     def __init__(self, host, port):
         self.host, self.port = host, port
+        self.name = f"{host}:{port}"
         self.sock = None
 
     def connect(self):
@@ -80,38 +130,64 @@ class HaasClient:
                 pass
         self.sock = None
 
-    def _drain(self):
-        """Drop late bytes from an earlier answer, so they aren't read as this one."""
-        self.sock.setblocking(False)
-        try:
-            while self.sock.recv(4096):
-                pass
-        except (BlockingIOError, InterruptedError):
-            pass
-        finally:
-            self.sock.settimeout(ANSWER_SECONDS)
+    def _recv(self, timeout):
+        if not select.select([self.sock], [], [], timeout)[0]:
+            return b""
+        chunk = self.sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("closed by the control")
+        return chunk
 
-    def ask(self, command):
-        """Send '?<command>' and return the raw answer, b'' if none came. Raises OSError if the link is down."""
-        self._drain()
-        self.sock.sendall(f"?{command}\r\n".encode("ascii"))
-        raw = b""
-        deadline = time.monotonic() + ANSWER_SECONDS
-        while time.monotonic() < deadline:
-            wait = QUIET_SECONDS if raw else deadline - time.monotonic()
-            self.sock.settimeout(max(0.01, min(wait, deadline - time.monotonic())))
+    def _send(self, data):
+        self.sock.sendall(data)
+
+
+class SerialClient(HaasClient):
+    """An RS-232 port, through a USB adapter and a null modem cable."""
+
+    PARITY = {"none": 0, "even": termios.PARENB, "odd": termios.PARENB | termios.PARODD}
+
+    def __init__(self, device, baud=9600, parity="none", data_bits=8, stop_bits=1):
+        self.name = self.device = str(device)
+        self.speed = getattr(termios, f"B{int(baud)}")
+        self.cflag = (self.PARITY[str(parity).lower()] | {7: termios.CS7, 8: termios.CS8}[int(data_bits)]
+                      | {1: 0, 2: termios.CSTOPB}[int(stop_bits)])
+        self.fd = None
+
+    def connect(self):
+        self.close()
+        self.fd = os.open(self.device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        iflag = termios.IXON | termios.IXOFF | (termios.INPCK if self.cflag & termios.PARENB else 0)
+        cc = termios.tcgetattr(self.fd)[6]
+        cc[termios.VMIN] = cc[termios.VTIME] = 0
+        try:
+            termios.tcsetattr(self.fd, termios.TCSANOW, [iflag, 0, self.cflag | termios.CREAD | termios.CLOCAL, 0,
+                                                         self.speed, self.speed, cc])
+            termios.tcflush(self.fd, termios.TCIOFLUSH)
+        except termios.error as e:   # not an OSError
+            self.close()
+            raise OSError(*e.args) from e
+
+    def close(self):
+        if self.fd is not None:
             try:
-                chunk = self.sock.recv(4096)
-            except socket.timeout:
-                if raw:
-                    break
-                continue
-            if not chunk:
-                raise ConnectionError("closed by the control")
-            raw += chunk
-            if clean(raw) and raw.rstrip(b" ").endswith((b"\n", b">")):
-                break
-        return raw
+                os.close(self.fd)
+            except OSError:
+                pass
+        self.fd = None
+
+    def _recv(self, timeout):
+        if not select.select([self.fd], [], [], timeout)[0]:
+            return b""
+        chunk = os.read(self.fd, 4096)
+        if not chunk:
+            raise ConnectionError("the serial adapter went away")
+        return chunk
+
+    def _send(self, data):
+        while data:
+            select.select([], [self.fd], [], ANSWER_SECONDS)
+            data = data[os.write(self.fd, data):]
 
 
 def data_log(path="logs/machine_data.log"):
@@ -127,10 +203,13 @@ def data_log(path="logs/machine_data.log"):
 
 
 class HaasMonitor:
-    """Polls the control in its own thread. `values` holds the last clean answer to each command."""
+    """Polls the control in its own thread. `values` holds the last clean answer to each command.
+    Make one with HaasMonitor.ngc or HaasMonitor.classic."""
 
-    def __init__(self, host, port=5051, poll_seconds=2, log=None):
-        self.client = HaasClient(str(host), int(port))
+    def __init__(self, client, discover, mtconnect=False, poll_seconds=2, log=None):
+        self.client = client
+        self.discover = discover
+        self.mtconnect = mtconnect
         self.poll_seconds = float(poll_seconds)
         self.log = log or data_log()
         self.values = {}
@@ -138,6 +217,14 @@ class HaasMonitor:
         self._failing = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="haas", daemon=True)
+
+    @classmethod
+    def ngc(cls, host, port=5051, poll_seconds=2, log=None):
+        return cls(TcpClient(str(host), int(port)), DISCOVER_NGC, True, poll_seconds, log)
+
+    @classmethod
+    def classic(cls, device, baud=9600, parity="none", data_bits=8, stop_bits=1, poll_seconds=2, log=None):
+        return cls(SerialClient(device, baud, parity, data_bits, stop_bits), DISCOVER_CLASSIC, False, poll_seconds, log)
 
     def start(self):
         self._thread.start()
@@ -151,11 +238,19 @@ class HaasMonitor:
         if always or self.values.get(command) != value:
             self.log.info(f"{command} = {value!r}  raw={raw!r}" + ("  (snapshot)" if always else ""))
         self.values[command] = value
+        return value
+
+    def _poll_all(self, commands, always=False):
+        # A serial port stays open with the machine off, so silence is how a classic control shows it's gone.
+        if not any([self._poll(command, always) for command in commands]):
+            raise ConnectionError("no answer")
 
     def _discover(self):
-        for command in DISCOVER:
+        for command in self.discover:
             raw = self.client.ask(command)
             self.log.info(f"{command} = {clean(raw)!r}  raw={raw!r}  (discover)")
+        if not self.mtconnect:
+            return
         for page in ("probe", "current"):
             url = f"http://{self.client.host}:{MTCONNECT_PORT}/{page}"
             try:
@@ -174,26 +269,26 @@ class HaasMonitor:
             try:
                 if not self.connected:
                     self.client.connect()
+                    # The first command after connecting can go unanswered.
+                    if not (clean(self.client.ask("Q100")) or clean(self.client.ask("Q100"))):
+                        raise ConnectionError("no answer")
                     self.connected, self._failing = True, False
-                    logger.info(f"[HAAS] Connected to {self.client.host}:{self.client.port}.")
-                    self.log.info(f"connected to {self.client.host}:{self.client.port}")
-                    self.client.ask("Q100")   # the first command after connecting can go unanswered
+                    logger.info(f"[HAAS] Connected to {self.client.name}.")
+                    self.log.info(f"connected to {self.client.name}")
                     self._discover()
                     snapshot_at = 0.0
                 if time.monotonic() >= snapshot_at:
-                    for command in FAST + SLOW:
-                        self._poll(command, always=True)
+                    self._poll_all(FAST + SLOW, always=True)
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS
                 else:
-                    for command in FAST:
-                        self._poll(command)
+                    self._poll_all(FAST)
                 self._stop.wait(self.poll_seconds)
             except OSError as e:
                 if self.connected:
                     logger.info(f"[HAAS] Lost the control: {e}.")
                     self.log.info(f"disconnected: {e}")
                 elif not self._failing:
-                    logger.info(f"[HAAS] Cannot reach {self.client.host}:{self.client.port}: {e}.")
+                    logger.info(f"[HAAS] Cannot reach {self.client.name}: {e}.")
                 self.connected, self._failing = False, True
                 self.values = {}
                 self.client.close()
