@@ -65,9 +65,18 @@ class FakeControl:
                 conn.sendall(b"\x02" + answer.encode() + b"\x17\r\n>")
 
 
+# (sequence, element) changes, as the control numbers them
+CHANGES = [(1, '<Execution dataItemId="rstat" name="RunStatus" sequence="1" timestamp="t1">STOPPED</Execution>'),
+           (2, '<Normal dataItemId="mcond" name="MachineCondition" type="SYSTEM" sequence="2" timestamp="t2"/>')]
+
+
 class FakeMTConnect(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = f"<MTConnectStreams page='{self.path}'/>".encode()
+        start = int(self.path.split("from=")[1].split("&")[0]) if "from=" in self.path else 0
+        rows = CHANGES if self.path == "/current" else [c for c in CHANGES if c[0] >= start]
+        body = ('<MTConnectStreams xmlns="urn:mtconnect.org:MTConnectStreams:1.2">'
+                f'<Header firstSequence="1" nextSequence="{CHANGES[-1][0] + 1}"/><Streams><DeviceStream>'
+                + "".join(r[1] for r in rows) + "</DeviceStream></Streams></MTConnectStreams>").encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -105,10 +114,12 @@ def log():
 
 
 check("connects and reads Q500", wait_for(lambda: mon.values.get("Q500") == STATE["Q500"]))
-check("serial number read after the unanswered first Q100", "Q100 = 'SERIAL NUMBER, 1234567'" in log())
+check("serial number read after the unanswered first Q100",
+      wait_for(lambda: "Q100 = 'SERIAL NUMBER, 1234567'" in log()))
 check("discover pass logged", "Q600 3027 = 'UNKNOWN'" in log() and "(discover)" in log())
-check("MTConnect pages saved", open("logs/mtconnect-current.xml").read() == "<MTConnectStreams page='/current'/>"
+check("MTConnect pages saved", "RunStatus" in open("logs/mtconnect-current.xml").read()
       and os.path.exists("logs/mtconnect-probe.xml"))
+check("MTConnect current values logged", wait_for(lambda: "MTConnect RunStatus = 'STOPPED'  at t1  (current)" in log()))
 check("raw bytes logged", "raw=b'\\x02PROGRAM" in log())
 
 lines = log().count("Q500 = ")
@@ -117,6 +128,12 @@ check("unchanged answers are not logged again", log().count("Q500 = ") == lines)
 
 STATE["Q500"] = "PROGRAM, O00001, BUSY, PARTS, 380"
 check("a change is logged", wait_for(lambda: "BUSY" in log()))
+CHANGES.append((3, '<Fault dataItemId="mcond" name="MachineCondition" type="SYSTEM" sequence="3" '
+                   'timestamp="t3">107 EMERGENCY OFF</Fault>'))
+check("an MTConnect change is logged once", wait_for(lambda: "MachineCondition = 'Fault 107 EMERGENCY OFF'" in log())
+      and (time.sleep(0.5) or log().count("EMERGENCY OFF") == 1))
+check("old MTConnect changes are not logged again", log().count("RunStatus = 'STOPPED'") == 1)
+
 control.drop.set()
 check("a lost link is noticed", wait_for(lambda: "disconnected" in log()))
 check("values are cleared while down", not mon.values)
@@ -124,6 +141,7 @@ control.drop.clear()
 check("reconnects", wait_for(lambda: log().count("connected to") >= 2 and mon.connected))
 
 mon.stop()
+mon._thread.join(10)
 
 
 class FakeClassic:
@@ -152,6 +170,7 @@ class FakeClassic:
 classic = FakeClassic()
 classic.off.set()
 haas_mdc.DISCOVER_CLASSIC = ("Q101", "Q600 1000")
+haas_mdc.ANSWER_SECONDS = 1   # a round with the machine off waits this long for each command
 STATE["Q500"] = "PROGRAM, O00100, IDLE, PARTS, 7"
 start = len(log())
 
@@ -177,7 +196,6 @@ check("classic: no MTConnect", "MTConnect" not in log())
 STATE["Q500"] = "STATUS BUSY"
 check("classic: a change is logged", wait_for(lambda: "STATUS BUSY" in log()))
 classic.off.set()
-# Each of the 4 commands in a round waits ANSWER_SECONDS first.
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
 classic.off.clear()
 check("classic: reconnects", wait_for(lambda: log().count("connected to") >= 2 and mon.connected, 20))

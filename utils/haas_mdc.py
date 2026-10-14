@@ -23,12 +23,16 @@ import termios
 import threading
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from logging.handlers import TimedRotatingFileHandler
 
 logger = logging.getLogger("haas")
 
-# Polled every poll_seconds: program, state and parts; mode; spindle RPM; tool in the spindle.
-FAST = ("Q500", "Q104", "Q600 3027", "Q201")
+# Polled every poll_seconds: program, state and parts; mode; tool in the spindle; spindle RPM and load;
+# motion type (#4001 is 0 for G00, 1 to 3 for feed moves).
+FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001")
+# The NGC adds coolant pump, right door and left door. The door inputs are the TM-1P's.
+FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
     "Q100",        # serial number
@@ -41,7 +45,6 @@ SLOW = (
     "Q304",        # previous cycle time
     "Q402",        # M30 counter 1
     "Q403",        # M30 counter 2
-    "Q600 1098",   # spindle load
     "Q600 3020",   # power-on timer
     "Q600 3021",   # cycle start timer
     "Q600 3022",   # feed timer
@@ -206,10 +209,13 @@ class HaasMonitor:
     """Polls the control in its own thread. `values` holds the last clean answer to each command.
     Make one with HaasMonitor.ngc or HaasMonitor.classic."""
 
-    def __init__(self, client, discover, mtconnect=False, poll_seconds=2, log=None):
+    def __init__(self, client, fast, discover, mtconnect=False, poll_seconds=2, log=None):
         self.client = client
+        self.fast = fast
         self.discover = discover
         self.mtconnect = mtconnect
+        self._mtc_next = None      # the next MTConnect change to read, None to start from the current page
+        self._mtc_failing = False
         self.poll_seconds = float(poll_seconds)
         self.log = log or data_log()
         self.values = {}
@@ -220,11 +226,12 @@ class HaasMonitor:
 
     @classmethod
     def ngc(cls, host, port=5051, poll_seconds=2, log=None):
-        return cls(TcpClient(str(host), int(port)), DISCOVER_NGC, True, poll_seconds, log)
+        return cls(TcpClient(str(host), int(port)), FAST_NGC, DISCOVER_NGC, True, poll_seconds, log)
 
     @classmethod
     def classic(cls, device, baud=9600, parity="none", data_bits=8, stop_bits=1, poll_seconds=2, log=None):
-        return cls(SerialClient(device, baud, parity, data_bits, stop_bits), DISCOVER_CLASSIC, False, poll_seconds, log)
+        return cls(SerialClient(device, baud, parity, data_bits, stop_bits), FAST, DISCOVER_CLASSIC, False,
+                   poll_seconds, log)
 
     def start(self):
         self._thread.start()
@@ -262,6 +269,34 @@ class HaasMonitor:
             except (OSError, ValueError) as e:
                 self.log.info(f"MTConnect {page}: {e}")
 
+    def _mtconnect_changes(self):
+        """Log every MTConnect change since the last read. The control keeps the last 333, numbered in order."""
+        page = f"sample?from={self._mtc_next}&count=1000" if self._mtc_next else "current"
+        try:
+            with urllib.request.urlopen(f"http://{self.client.host}:{MTCONNECT_PORT}/{page}", timeout=2) as r:
+                root = ET.fromstring(r.read())
+            header = root.find(".//{*}Header")
+            if header is None:   # an MTConnectError, e.g. after the control restarted and renumbered
+                raise ValueError(ET.tostring(root, encoding="unicode")[:200])
+            first, next_ = int(header.get("firstSequence")), int(header.get("nextSequence"))
+        except (OSError, ValueError, ET.ParseError, TypeError) as e:
+            if not self._mtc_failing:
+                self.log.info(f"MTConnect: {e}")
+            self._mtc_failing, self._mtc_next = True, None
+            return
+        self._mtc_failing = False
+        if self._mtc_next and first > self._mtc_next:
+            self.log.info(f"MTConnect: missed changes {self._mtc_next} to {first - 1}")
+        items = sorted((int(e.get("sequence")), e) for e in root.iter() if e.get("sequence"))
+        for seq, e in items:
+            tag = e.tag.split("}")[-1]
+            value = (e.text or "").strip()
+            if e.get("type"):   # a condition: Normal, Warning or Fault, with the alarm's text
+                value = f"{tag} {value}".strip()
+            self.log.info(f"MTConnect {e.get('name') or e.get('dataItemId')} = {value!r}  at {e.get('timestamp')}"
+                          + ("" if self._mtc_next else "  (current)"))
+        self._mtc_next = next_
+
     def _run(self):
         # Connection changes go to sync.log at INFO: the control is off most nights, which isn't worth a warning.
         snapshot_at = 0.0
@@ -276,12 +311,15 @@ class HaasMonitor:
                     logger.info(f"[HAAS] Connected to {self.client.name}.")
                     self.log.info(f"connected to {self.client.name}")
                     self._discover()
+                    self._mtc_next = None
                     snapshot_at = 0.0
                 if time.monotonic() >= snapshot_at:
-                    self._poll_all(FAST + SLOW, always=True)
+                    self._poll_all(self.fast + SLOW, always=True)
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS
                 else:
-                    self._poll_all(FAST)
+                    self._poll_all(self.fast)
+                if self.mtconnect:
+                    self._mtconnect_changes()
                 self._stop.wait(self.poll_seconds)
             except OSError as e:
                 if self.connected:
