@@ -1,5 +1,6 @@
 """Copies the CNC programs uploaded in the dashboard's machine popup into PROGRAM_FOLDER, which Samba shares with the
-control. A program's name can have folders in it, like "Job 1/Operation 1.nc".
+control. A program's name can have folders in it, like "Job 1/Operation 1.nc". Folders made on the dashboard are made
+here too, even empty ones, and one deleted there goes here unless the control saved files in it.
 
 The dashboard's list wins for the files it put there: a new upload replaces the file, and a deleted one goes. Files the
 control saved there itself are left alone, and so is one of ours it edited, until the dashboard has a new version.
@@ -40,6 +41,7 @@ class ProgramSync:
         self.machine_id = machine_id
         self.folder = folder
         self.manifest = manifest
+        self.folder_manifest = os.path.splitext(manifest)[0] + "-folders.json"   # the folders we made
         self.poll_seconds = poll_seconds
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="programs", daemon=True)
@@ -64,7 +66,41 @@ class ProgramSync:
             json.dump(ours, f)
         os.replace(tmp, self.manifest)
 
+    def _load_folders(self):
+        try:
+            with open(self.folder_manifest) as f:
+                return set(json.load(f))
+        except (FileNotFoundError, ValueError):
+            return set()
+
+    def _save_folders(self, made):
+        tmp = self.folder_manifest + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(sorted(made), f)
+        os.replace(tmp, self.folder_manifest)
+
+    def _not_writable(self, name, e):
+        """Say, the control saved a file where this needs a folder."""
+        if name not in self._failed:
+            logger.warning(f"[PROGRAMS] Cannot write {name}: {e}")
+            self._failed.add(name)
+
     def sync(self, conn):
+        made = self._load_folders()
+        folders = sorted(r["path"] for r in conn.execute("SELECT path FROM cnc_program_folders WHERE machine_id = %s",
+                                                         (self.machine_id,)).fetchall() if allowed(r["path"]))
+        for path in folders:
+            full = os.path.join(self.folder, *path.split("/"))
+            if path not in made or not os.path.isdir(full):
+                try:
+                    os.makedirs(full, exist_ok=True)
+                except OSError as e:
+                    self._not_writable(path, e)
+                    continue
+                if path not in made:
+                    made.add(path)
+                    self._save_folders(made)
+                    logger.info(f"[PROGRAMS] Made folder {path}.")
         ours = self._load()
         rows = conn.execute("SELECT id, name, sha256, synced_at IS NOT NULL AS synced FROM cnc_programs WHERE machine_id = %s",
                             (self.machine_id,)).fetchall()
@@ -88,10 +124,7 @@ class ProgramSync:
                         f.write(content["content"])
                     os.replace(tmp, path)
                 except OSError as e:
-                    # Say, the control saved a file where this needs a folder.
-                    if name not in self._failed:
-                        logger.warning(f"[PROGRAMS] Cannot write {name}: {e}")
-                        self._failed.add(name)
+                    self._not_writable(name, e)
                     continue
                 self._failed.discard(name)
                 ours[name] = r["sha256"]
@@ -106,22 +139,20 @@ class ProgramSync:
             if file_sha(path) == ours[name]:
                 os.remove(path)
                 logger.info(f"[PROGRAMS] Deleted {name}.")
-                self._remove_empty(os.path.dirname(path))
             else:
                 logger.info(f"[PROGRAMS] Left {name}. It was deleted on the dashboard but changed here.")
             del ours[name]
             self._save(ours)
-
-    def _remove_empty(self, folder):
-        """The folder and the ones above it, while they're empty."""
-        top = os.path.normpath(self.folder)
-        folder = os.path.normpath(folder)
-        while folder != top and folder.startswith(top + os.sep):
+        for path in sorted(made - set(folders), key=lambda p: -p.count("/")):   # the ones inside first
             try:
-                os.rmdir(folder)
+                os.rmdir(os.path.join(self.folder, *path.split("/")))
+                logger.info(f"[PROGRAMS] Deleted folder {path}.")
+            except FileNotFoundError:
+                pass
             except OSError:
-                return
-            folder = os.path.dirname(folder)
+                logger.info(f"[PROGRAMS] Left folder {path}. It was deleted on the dashboard but has files saved here.")
+            made.discard(path)
+            self._save_folders(made)
 
     def _run(self):
         conn = None

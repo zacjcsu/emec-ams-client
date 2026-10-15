@@ -26,9 +26,12 @@ class FakeServer:
 
     def __init__(self):
         self.programs = {}
+        self.folders = set()
         self.next_id = 1
 
     def upload(self, name, text):
+        parts = name.split("/")
+        self.folders |= {"/".join(parts[:i]) for i in range(1, len(parts))}
         content = text.encode()
         old = self.programs.get(name)
         sha = hashlib.sha256(content).hexdigest()
@@ -39,7 +42,9 @@ class FakeServer:
 
     def execute(self, sql, params):
         rows = list(self.programs.values())
-        if sql.startswith("SELECT id, name"):
+        if sql.startswith("SELECT path"):
+            result = [{"path": f} for f in self.folders]
+        elif sql.startswith("SELECT id, name"):
             result = [{k: p[k] for k in ("id", "name", "sha256", "synced")} for p in rows]
         elif sql.startswith("SELECT content"):
             result = [{"content": p["content"]} for p in rows if (p["id"], p["sha256"]) == params]
@@ -108,11 +113,21 @@ check("writes into folders", "O1" in read("Job 1/Operation 1.nc") and "O2" in re
 check("same name in two folders", server.programs["Job 2/Operation 1.nc"]["synced"])
 check("no temp files in folders", not any(f.startswith(".") for f in os.listdir(os.path.join(folder, "Job 1"))))
 
-open(os.path.join(folder, "Job 2", "HAAS2.nc"), "w").write("saved on the control\n")
-del server.programs["Job 1/Operation 1.nc"], server.programs["Job 1/Fixture/Operation 2.nc"]
-del server.programs["Job 2/Operation 1.nc"]
+server.folders.add("Empty")
 sync.sync(server)
-check("an emptied folder goes, one with the control's file stays", "Job 1" not in files() and os.listdir(os.path.join(folder, "Job 2")) == ["HAAS2.nc"])
+check("an empty folder is made", os.path.isdir(os.path.join(folder, "Empty")))
+
+del server.programs["Job 1/Fixture/Operation 2.nc"]
+sync.sync(server)
+check("deleting a file keeps its folder", os.listdir(os.path.join(folder, "Job 1", "Fixture")) == [])
+
+open(os.path.join(folder, "Job 2", "HAAS2.nc"), "w").write("saved on the control\n")
+for name in [n for n in server.programs if n.startswith(("Job 1/", "Job 2/"))]:
+    del server.programs[name]
+server.folders -= {"Job 1", "Job 1/Fixture", "Job 2", "Empty"}
+sync.sync(server)
+check("deleted folders go, one with the control's file stays", "Job 1" not in files() and "Empty" not in files()
+      and os.listdir(os.path.join(folder, "Job 2")) == ["HAAS2.nc"])
 
 open(os.path.join(folder, "Job 3"), "w").write("a file named like a folder\n")
 server.upload("Job 3/Operation 1.nc", "O4\nM30\n%\n")
