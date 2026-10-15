@@ -2,9 +2,17 @@
 #
 # EMEC-AMS Raspberry Pi provisioning. Safe to re-run.
 #
-#   curl -fsSL https://raw.githubusercontent.com/zacjcsu/emec-ams-client/main/emecamssetup.sh | bash
+#   curl -O https://raw.githubusercontent.com/zacjcsu/emec-ams-client/refs/heads/main/emecamssetup.sh
+#   bash emecamssetup.sh
 #
-# Unattended: pass MACHINE_ID, MACHINE_NAME, MACHINE_TYPE, DB_* and --yes.
+# It asks everything first, then runs on its own. It connects to the dashboard's database before asking about the
+# machine, so it can list the machines and categories there.
+#
+# Unattended: pass DB_PASS, MACHINE_ID and --yes. Anything else not passed takes its default:
+#   DB_HOST DB_PORT DB_USER DB_NAME MACHINE_NAME MACHINE_TYPE (the category ID) MACHINE_KIND (attended, cnc)
+#   SCREEN READER (yes, no) CONTACTOR_SWITCH (none, true, inverted) CONTACTOR_PIN
+#   CONTROL (none, haas-ngc, haas-classic) HAAS_HOST HAAS_PORT SERIAL_DEVICE SERIAL_BAUD
+#   SHARE_PROGRAMS (yes, no) HAAS_SMB_PASS
 
 set -euo pipefail
 
@@ -33,11 +41,17 @@ KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
 
 # Written to ${APP_DIR}/.env at mode 600. Prompted for, or passed as env vars.
-# This file is public, so the host, user and password have no default.
+# This file is public, so the password has no default.
 # Every Pi shares the ams_pi password. If a Pi is lost, change it on the server, then on each Pi set DB_PASS
 # in ${APP_DIR}/.env and restart emec-ams.
+DEF_DB_HOST="10.1.226.72"
 DEF_DB_PORT="5432"
+DEF_DB_USER="ams_pi"
 DEF_DB_NAME="emec_access"
+
+# A CNC's control is on the Pi's second network port, eth1, with only the Pi and the control on it.
+HAAS_LINK_ADDR="${HAAS_LINK_ADDR:-192.168.50.1/24}"
+PROGRAM_DIR="/home/${APP_USER}/haas-programs"
 
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-}"
@@ -81,8 +95,7 @@ no_prompt_die() {
     die "Cannot prompt for '$1': no terminal available.
       Run from an interactive shell, or re-run non-interactively with --yes and
       supply the values as environment variables, e.g.
-        MACHINE_ID=lathe-001 MACHINE_NAME='Manual Lathe 1' \\
-        MACHINE_TYPE='Manual Lathe' DB_PASS='...' bash -s -- --yes"
+        MACHINE_ID=lathe-001 DB_PASS='...' bash -s -- --yes"
 }
 
 ask() {
@@ -140,6 +153,61 @@ ask_secret() {
     die "Too many failed attempts."
 }
 
+is_one_of() {
+    local __x="$1" __o
+    shift
+    for __o; do
+        [[ "$__x" == "$__o" ]] && return 0
+    done
+    return 1
+}
+
+ask_choice() {
+    # ask_choice <variable-name> <prompt> <default> <option>...   (a value passed as an env var is checked, not asked)
+    local __cv="$1" __cp="$2" __cd="$3" __choice __list __try=0
+    shift 3
+    __list="$(printf '%s, ' "$@")"; __list="${__list%, }"
+    __choice="${!__cv:-}"
+    while (( __try < 3 )); do
+        local __preset=0
+        if [[ -n "$__choice" ]]; then
+            __preset=1
+        else
+            ask __choice "${__cp} (${__list})" "$__cd"
+        fi
+        __choice="${__choice,,}"
+        case "$__choice" in y|true|1) is_one_of yes "$@" && __choice=yes ;; n|false|0) is_one_of no "$@" && __choice=no ;; esac
+        if is_one_of "$__choice" "$@"; then
+            printf -v "$__cv" '%s' "$__choice"
+            (( __preset )) && info "${__cp}: ${__choice}"
+            return 0
+        fi
+        (( __preset || ASSUME_YES )) && die "${__cp}: '${__choice}' isn't one of ${__list}. Set ${__cv} to one of them."
+        warn "Pick one of ${__list}."
+        __choice=""
+        __try=$(( __try + 1 ))
+    done
+    die "Too many failed attempts."
+}
+
+ask_number() {
+    # ask_number <variable-name> <prompt> <default>
+    local __nv="$1" __np="$2" __nd="$3" __number __try=0
+    __number="${!__nv:-}"
+    while (( __try < 3 )); do
+        [[ -n "$__number" ]] || ask __number "$__np" "$__nd"
+        if [[ "$__number" =~ ^[0-9]+$ ]]; then
+            printf -v "$__nv" '%s' "$__number"
+            return 0
+        fi
+        (( ASSUME_YES )) && die "${__np}: '${__number}' isn't a number. Set ${__nv}."
+        warn "Enter a number."
+        __number=""
+        __try=$(( __try + 1 ))
+    done
+    die "Too many failed attempts."
+}
+
 # ---------------------------------------------------------------------------
 # 0. Preflight
 # ---------------------------------------------------------------------------
@@ -180,38 +248,7 @@ trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
 ok "sudo ready"
 
 # ---------------------------------------------------------------------------
-# 1. Machine identity
-# ---------------------------------------------------------------------------
-
-step "Machine identity (written to config/config.json)"
-
-DEF_ID="lathe-001"; DEF_NAME="Manual Lathe 1"; DEF_TYPE="Manual Lathe"
-if [[ -f "${APP_DIR}/config/config.json" ]] && command -v python3 >/dev/null; then
-    # Re-run: offer the values already on this Pi as the defaults.
-    eval "$(python3 - "${APP_DIR}/config/config.json" <<'PY' 2>/dev/null || true
-import json, shlex, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-for k, v in (("DEF_ID", "machine_id"), ("DEF_NAME", "machine_name"), ("DEF_TYPE", "machine_type")):
-    if d.get(v):
-        print(f"{k}={shlex.quote(str(d[v]))}")
-PY
-)"
-    info "Found an existing config on this Pi; its values are the defaults below."
-fi
-
-MACHINE_ID="${MACHINE_ID:-}"; MACHINE_NAME="${MACHINE_NAME:-}"; MACHINE_TYPE="${MACHINE_TYPE:-}"
-[[ -z "$MACHINE_ID"   ]] && ask MACHINE_ID   "Machine ID"   "$DEF_ID"
-[[ -z "$MACHINE_NAME" ]] && ask MACHINE_NAME "Machine name" "$DEF_NAME"
-[[ -z "$MACHINE_TYPE" ]] && ask MACHINE_TYPE "Machine type" "$DEF_TYPE"
-
-[[ -n "$MACHINE_ID" ]] || die "Machine ID cannot be empty."
-ok "${MACHINE_ID} / ${MACHINE_NAME} / ${MACHINE_TYPE}"
-
-# ---------------------------------------------------------------------------
-# 1b. Database credentials
+# 1. Database credentials
 # ---------------------------------------------------------------------------
 
 step "Database credentials (written to .env)"
@@ -221,19 +258,251 @@ KEEP_ENV=0
 
 if [[ -f "$ENV_FILE" ]] && [[ -z "$DB_PASS" ]]; then
     KEEP_ENV=1
-    ok "Existing .env found; keeping it."
+    while IFS='=' read -r __k __v; do
+        case "$__k" in
+            DB_HOST|DB_PORT|DB_USER|DB_PASS|DB_NAME)
+                if [[ -z "${!__k}" ]]; then printf -v "$__k" '%s' "$__v"; fi ;;
+        esac
+    done <"$ENV_FILE"
+    ok "Existing .env found; using it."
     info "To replace it, re-run with DB_PASS=... or delete ${ENV_FILE} first."
 else
-    [[ -z "$DB_HOST" ]] && ask_required DB_HOST "PostgreSQL host (dashboard VM address)"
+    [[ -z "$DB_HOST" ]] && ask DB_HOST "PostgreSQL host (dashboard VM address)" "$DEF_DB_HOST"
     [[ -z "$DB_PORT" ]] && ask DB_PORT "PostgreSQL port" "$DEF_DB_PORT"
-    [[ -z "$DB_USER" ]] && ask_required DB_USER "PostgreSQL user"
+    [[ -z "$DB_USER" ]] && ask DB_USER "PostgreSQL user" "$DEF_DB_USER"
     [[ -z "$DB_NAME" ]] && ask DB_NAME "Database name" "$DEF_DB_NAME"
     [[ -z "$DB_PASS" ]] && ask_secret DB_PASS "PostgreSQL password"
-    ok "Credentials collected for ${DB_USER}@${DB_HOST}"
 fi
+DB_PORT="${DB_PORT:-$DEF_DB_PORT}"
+DB_NAME="${DB_NAME:-$DEF_DB_NAME}"
 
 # ---------------------------------------------------------------------------
-# 2. Regional settings (the raspi-config steps, done non-interactively)
+# 2. System packages
+# ---------------------------------------------------------------------------
+
+step "Installing system packages"
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -qq
+sudo apt-get install -y -qq \
+    git curl unzip rsync ca-certificates \
+    python3 python3-venv python3-dev python3-pip \
+    python3-rpi-lgpio python3-spidev \
+    build-essential i2c-tools postgresql-client >/dev/null
+ok "Base packages installed"
+
+# ---------------------------------------------------------------------------
+# 3. Connect to the dashboard's database
+# ---------------------------------------------------------------------------
+
+step "Connecting to the dashboard's database"
+
+db_query() {
+    PGPASSWORD="$DB_PASS" PGCONNECT_TIMEOUT=10 psql -X -q -A -t -F $'\x1f' -v ON_ERROR_STOP=1 \
+        -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "$1"
+}
+
+__try=0
+until DB_ERR="$(db_query 'SELECT 1' 2>&1 >/dev/null)"; do
+    warn "Cannot connect to ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}:"
+    printf '%s\n' "$DB_ERR" | sed 's/^/      /' >&2
+    if (( ASSUME_YES || ! CAN_PROMPT || __try >= 2 )); then
+        die "Check the database settings and run this again."
+    fi
+    info "Enter the settings again."
+    ask DB_HOST "PostgreSQL host (dashboard VM address)" "$DB_HOST"
+    ask DB_PORT "PostgreSQL port" "$DB_PORT"
+    ask DB_USER "PostgreSQL user" "$DB_USER"
+    ask DB_NAME "Database name" "$DB_NAME"
+    DB_PASS=""
+    ask_secret DB_PASS "PostgreSQL password"
+    KEEP_ENV=0
+    __try=$(( __try + 1 ))
+done
+ok "Connected as ${DB_USER}@${DB_HOST}"
+
+CAT_IDS=(); CAT_NAMES=()
+while IFS=$'\x1f' read -r __id __name; do
+    CAT_IDS+=("$__id"); CAT_NAMES+=("$__name")
+done < <(db_query "SELECT machine_type, name FROM machine_categories ORDER BY name")
+(( ${#CAT_IDS[@]} )) || die "The dashboard has no machine categories. Add one on the Machines page first."
+
+M_IDS=(); M_NAMES=(); M_TYPES=(); M_DEVICES=()
+while IFS=$'\x1f' read -r __id __name __type __device; do
+    M_IDS+=("$__id"); M_NAMES+=("$__name"); M_TYPES+=("$__type"); M_DEVICES+=("$__device")
+done < <(db_query "SELECT machine_id, COALESCE(machine_name, ''), COALESCE(machine_type, ''), COALESCE(device_id, '')
+                   FROM machine ORDER BY machine_id")
+ok "${#M_IDS[@]} machines and ${#CAT_IDS[@]} categories on the dashboard"
+
+machine_index() {
+    local __i
+    for __i in "${!M_IDS[@]}"; do
+        if [[ "${M_IDS[$__i]}" == "$1" ]]; then echo "$__i"; return 0; fi
+    done
+    return 0
+}
+
+# A number from the list, an ID or a name gives the ID. Anything else gives nothing.
+category_id() {
+    local __x="${1,,}" __i
+    if [[ "$__x" =~ ^[0-9]+$ ]] && (( __x >= 1 && __x <= ${#CAT_IDS[@]} )); then
+        echo "${CAT_IDS[$(( __x - 1 ))]}"; return 0
+    fi
+    for __i in "${!CAT_IDS[@]}"; do
+        if [[ "$__x" == "${CAT_IDS[$__i],,}" || "$__x" == "${CAT_NAMES[$__i],,}" ]]; then
+            echo "${CAT_IDS[$__i]}"; return 0
+        fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 4. The machine (written to config/config.json)
+# ---------------------------------------------------------------------------
+
+step "Machine (written to config/config.json)"
+
+CONFIG_FILE="${APP_DIR}/config/config.json"
+CPU_SERIAL="$(sed -n 's/^Serial[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -1)"
+
+# Re-run: what's already in this Pi's config.json is the default for each question.
+CFG_ID=""; CFG_NAME=""; CFG_TYPE=""; CFG_KIND=""; CFG_SCREEN=""; CFG_READER=""; CFG_CONTACTOR=""; CFG_PIN=""
+CFG_CONTROL=""; CFG_HAAS_HOST=""; CFG_HAAS_PORT=""; CFG_SERIAL_DEVICE=""; CFG_SERIAL_BAUD=""
+if [[ -f "$CONFIG_FILE" ]]; then
+    eval "$(python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
+import json, shlex, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+md = d.get("machine_data") if isinstance(d.get("machine_data"), dict) else {}
+switch = d.get("contactor_switch", False)
+values = {
+    "CFG_ID": d.get("machine_id"), "CFG_NAME": d.get("machine_name"), "CFG_TYPE": d.get("machine_type"),
+    "CFG_KIND": d.get("kind"),
+    "CFG_SCREEN": "no" if d.get("screen", True) is False else "yes",
+    "CFG_READER": "no" if d.get("reader", True) is False else "yes",
+    "CFG_CONTACTOR": "inverted" if switch == "inverted" else "true" if switch else "none",
+    "CFG_PIN": d.get("contactor_pin"), "CFG_CONTROL": md.get("control"),
+    "CFG_HAAS_HOST": md.get("host"), "CFG_HAAS_PORT": md.get("port"),
+    "CFG_SERIAL_DEVICE": md.get("device"), "CFG_SERIAL_BAUD": md.get("baud"),
+}
+for k, v in values.items():
+    if v not in (None, ""):
+        print(f"{k}={shlex.quote(str(v))}")
+PY
+)"
+    info "Found an existing config on this Pi; its values are the defaults below."
+fi
+
+# The machine this Pi last ran as, from its CPU serial.
+SERIAL_ID=""
+for __i in "${!M_IDS[@]}"; do
+    if [[ -n "$CPU_SERIAL" && "${M_DEVICES[$__i]}" == "$CPU_SERIAL" ]]; then SERIAL_ID="${M_IDS[$__i]}"; fi
+done
+
+info "Machines on the dashboard:"
+for __i in "${!M_IDS[@]}"; do
+    printf '      %-20s %-34s %s\n' "${M_IDS[$__i]}" "${M_NAMES[$__i]}" "${M_TYPES[$__i]}"
+done
+[[ -n "$SERIAL_ID" ]] && info "This Pi last ran as ${SERIAL_ID}."
+
+MACHINE_ID="${MACHINE_ID:-}"; MACHINE_NAME="${MACHINE_NAME:-}"; MACHINE_TYPE="${MACHINE_TYPE:-}"
+DEF_ID="${CFG_ID:-$SERIAL_ID}"
+if [[ -z "$MACHINE_ID" ]]; then
+    if [[ -n "$DEF_ID" ]]; then ask MACHINE_ID "Machine ID" "$DEF_ID"; else ask_required MACHINE_ID "Machine ID"; fi
+fi
+MACHINE_ID="${MACHINE_ID,,}"
+[[ "$MACHINE_ID" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "Machine ID '${MACHINE_ID}' can only have letters, numbers, - and _."
+
+IDX="$(machine_index "$MACHINE_ID")"
+DEF_NAME=""; DEF_TYPE=""
+if [[ -n "$IDX" ]]; then
+    ok "On the dashboard as ${M_NAMES[$IDX]}"
+    DEF_NAME="${M_NAMES[$IDX]}"; DEF_TYPE="${M_TYPES[$IDX]}"
+    if [[ -n "${M_DEVICES[$IDX]}" && -n "$CPU_SERIAL" && "${M_DEVICES[$IDX]}" != "$CPU_SERIAL" ]]; then
+        warn "Another Pi (${M_DEVICES[$IDX]}) last ran as ${MACHINE_ID}. This one takes over when it starts."
+    fi
+else
+    info "${MACHINE_ID} isn't on the dashboard yet. The Pi adds it when it starts."
+fi
+if [[ "$CFG_ID" == "$MACHINE_ID" ]]; then
+    DEF_NAME="${DEF_NAME:-$CFG_NAME}"; DEF_TYPE="${DEF_TYPE:-$CFG_TYPE}"
+fi
+
+if [[ -z "$MACHINE_NAME" ]]; then
+    if [[ -n "$DEF_NAME" ]]; then ask MACHINE_NAME "Machine name" "$DEF_NAME"; else ask_required MACHINE_NAME "Machine name"; fi
+fi
+
+info "Categories:"
+for __i in "${!CAT_IDS[@]}"; do
+    printf '      %2d) %-24s %s\n' "$(( __i + 1 ))" "${CAT_IDS[$__i]}" "${CAT_NAMES[$__i]}"
+done
+DEF_TYPE="$(category_id "$DEF_TYPE")"
+[[ -n "$DEF_TYPE" ]] || DEF_TYPE="$(category_id standard-manual-lathe)"
+[[ -n "$DEF_TYPE" ]] || DEF_TYPE="${CAT_IDS[0]}"
+__try=0
+until [[ -n "$MACHINE_TYPE" ]] && [[ -n "$(category_id "$MACHINE_TYPE")" ]]; do
+    if [[ -n "$MACHINE_TYPE" ]]; then
+        (( ASSUME_YES || __try >= 3 )) && die "'${MACHINE_TYPE}' isn't a category on the dashboard."
+        warn "'${MACHINE_TYPE}' isn't a category on the dashboard. Pick a number or an ID from the list."
+        __try=$(( __try + 1 ))
+    fi
+    MACHINE_TYPE=""
+    ask MACHINE_TYPE "Category (number or ID)" "$DEF_TYPE"
+done
+MACHINE_TYPE="$(category_id "$MACHINE_TYPE")"
+
+DEF_KIND="${CFG_KIND:-attended}"
+[[ -z "$CFG_KIND" && "$MACHINE_TYPE" == cnc* ]] && DEF_KIND="cnc"
+MACHINE_KIND="${MACHINE_KIND:-}"
+ask_choice MACHINE_KIND "Kind" "$DEF_KIND" attended cnc
+
+SCREEN="${SCREEN:-}"; READER="${READER:-}"
+ask_choice SCREEN "Screen fitted" "${CFG_SCREEN:-yes}" yes no
+ask_choice READER "Card reader fitted" "${CFG_READER:-yes}" yes no
+
+info "Contactor switch: true reads an open circuit as on. inverted reads a closed circuit as on."
+CONTACTOR_SWITCH="${CONTACTOR_SWITCH:-}"; CONTACTOR_PIN="${CONTACTOR_PIN:-}"
+ask_choice CONTACTOR_SWITCH "Contactor switch" "${CFG_CONTACTOR:-none}" none true inverted
+if [[ "$CONTACTOR_SWITCH" != none ]]; then
+    ask_number CONTACTOR_PIN "Contactor header pin (ground is pin 39)" "${CFG_PIN:-37}"
+fi
+
+# A control this script doesn't know, like one from a branch, can be kept as it is.
+CONTROLS=(none haas-ngc haas-classic)
+if [[ -n "$CFG_CONTROL" ]] && ! is_one_of "$CFG_CONTROL" "${CONTROLS[@]}"; then CONTROLS+=("$CFG_CONTROL"); fi
+DEF_CONTROL="${CFG_CONTROL:-none}"
+[[ -z "$CFG_CONTROL" && "$MACHINE_KIND" == cnc ]] && DEF_CONTROL="haas-ngc"
+CONTROL="${CONTROL:-}"
+ask_choice CONTROL "Machine control" "$DEF_CONTROL" "${CONTROLS[@]}"
+HAAS_HOST="${HAAS_HOST:-}"; HAAS_PORT="${HAAS_PORT:-}"; SERIAL_DEVICE="${SERIAL_DEVICE:-}"; SERIAL_BAUD="${SERIAL_BAUD:-}"
+case "$CONTROL" in
+    haas-ngc)
+        [[ -z "$HAAS_HOST" ]] && ask HAAS_HOST "Haas address" "${CFG_HAAS_HOST:-192.168.50.2}"
+        ask_number HAAS_PORT "Haas port" "${CFG_HAAS_PORT:-5051}" ;;
+    haas-classic)
+        [[ -z "$SERIAL_DEVICE" ]] && ask SERIAL_DEVICE "Serial device" "${CFG_SERIAL_DEVICE:-/dev/ttyUSB0}"
+        ask_number SERIAL_BAUD "Serial baud" "${CFG_SERIAL_BAUD:-9600}" ;;
+esac
+
+SHARE_PROGRAMS="${SHARE_PROGRAMS:-}"
+HAAS_SMB_PASS="${HAAS_SMB_PASS:-}"
+if [[ "$MACHINE_KIND" == cnc || "$CONTROL" == haas-* ]]; then
+    ask_choice SHARE_PROGRAMS "Share programs with the control" yes yes no
+else
+    SHARE_PROGRAMS="${SHARE_PROGRAMS:-no}"
+fi
+if [[ "$SHARE_PROGRAMS" == yes ]] && [[ -z "$HAAS_SMB_PASS" ]] \
+   && ! { command -v pdbedit >/dev/null && sudo pdbedit -L 2>/dev/null | grep -q '^haas:'; }; then
+    ask_secret HAAS_SMB_PASS "Password the control signs in with, as user haas"
+fi
+
+ok "${MACHINE_ID} / ${MACHINE_NAME} / ${MACHINE_TYPE} / ${MACHINE_KIND}"
+info "Everything else runs on its own."
+
+# ---------------------------------------------------------------------------
+# 5. Regional settings (the raspi-config steps, done non-interactively)
 # ---------------------------------------------------------------------------
 
 step "Regional settings"
@@ -256,7 +525,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Hardware interfaces
+# 6. Hardware interfaces
 # ---------------------------------------------------------------------------
 
 step "Enabling SPI (RFID reader) and I2C (LCD)"
@@ -292,23 +561,7 @@ if [[ -n "$HW_GROUPS" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. System packages
-# ---------------------------------------------------------------------------
-
-step "Installing system packages"
-
-
-export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
-sudo apt-get install -y -qq \
-    git curl unzip rsync ca-certificates \
-    python3 python3-venv python3-dev python3-pip \
-    python3-rpi-lgpio python3-spidev \
-    build-essential i2c-tools >/dev/null
-ok "Base packages installed"
-
-# ---------------------------------------------------------------------------
-# 5. Fetch the application code
+# 7. Fetch the application code
 # ---------------------------------------------------------------------------
 
 step "Fetching application code (source: ${SOURCE_MODE})"
@@ -394,7 +647,7 @@ mkdir -p "${APP_DIR}/logs" "${APP_DIR}/data" "${APP_DIR}/config"
 touch "${APP_DIR}/logs/errors.log" "${APP_DIR}/logs/sync.log"
 
 # ---------------------------------------------------------------------------
-# 6. Config files
+# 8. Config files
 # ---------------------------------------------------------------------------
 
 step "Writing configuration"
@@ -416,15 +669,48 @@ EOF
     ok ".env written (mode 600)"
 fi
 
-# Other keys already in the file, such as kind, contactor_switch and machine_data, are kept.
-python3 - "${APP_DIR}/config/config.json" "$MACHINE_ID" "$MACHINE_NAME" "$MACHINE_TYPE" <<'PY'
-import json, sys
-path, machine_id, name, machine_type = sys.argv[1:]
+PROGRAM_FOLDER=""
+[[ "$SHARE_PROGRAMS" == yes ]] && PROGRAM_FOLDER="$PROGRAM_DIR"
+# Keys this script doesn't ask about are kept. So are a control's other settings, like poll_seconds.
+CFG_ID="$MACHINE_ID" CFG_NAME="$MACHINE_NAME" CFG_TYPE="$MACHINE_TYPE" CFG_KIND="$MACHINE_KIND" \
+CFG_SCREEN="$SCREEN" CFG_READER="$READER" CFG_CONTACTOR="$CONTACTOR_SWITCH" CFG_PIN="$CONTACTOR_PIN" \
+CFG_CONTROL="$CONTROL" CFG_HAAS_HOST="$HAAS_HOST" CFG_HAAS_PORT="$HAAS_PORT" \
+CFG_SERIAL_DEVICE="$SERIAL_DEVICE" CFG_SERIAL_BAUD="$SERIAL_BAUD" \
+CFG_PROGRAM_DIR="$PROGRAM_FOLDER" \
+python3 - "$CONFIG_FILE" <<'PY'
+import json, os, sys
+path, e = sys.argv[1], os.environ
 try:
     data = json.load(open(path))
 except Exception:
     data = {}
-data.update(machine_id=machine_id, machine_name=name, machine_type=machine_type)
+data.update(machine_id=e["CFG_ID"], machine_name=e["CFG_NAME"], machine_type=e["CFG_TYPE"], kind=e["CFG_KIND"])
+for key in ("screen", "reader"):
+    if e["CFG_" + key.upper()] == "no":
+        data[key] = False
+    else:
+        data.pop(key, None)
+if e["CFG_CONTACTOR"] == "none":
+    data.pop("contactor_switch", None)
+    data.pop("contactor_pin", None)
+else:
+    data["contactor_switch"] = True if e["CFG_CONTACTOR"] == "true" else "inverted"
+    data["contactor_pin"] = int(e["CFG_PIN"])
+control = e["CFG_CONTROL"]
+old = data.get("machine_data") if isinstance(data.get("machine_data"), dict) else {}
+machine_data = dict(old) if old.get("control") == control else {"control": control}
+if control == "none":
+    data.pop("machine_data", None)
+elif control == "haas-ngc":
+    machine_data.update(host=e["CFG_HAAS_HOST"], port=int(e["CFG_HAAS_PORT"]))
+    data["machine_data"] = machine_data
+elif control == "haas-classic":
+    machine_data.update(device=e["CFG_SERIAL_DEVICE"], baud=int(e["CFG_SERIAL_BAUD"]))
+    data["machine_data"] = machine_data
+if e["CFG_PROGRAM_DIR"]:
+    data["program_folder"] = e["CFG_PROGRAM_DIR"]
+else:
+    data.pop("program_folder", None)
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -445,7 +731,67 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Python environment
+# 9. Program share for the control
+# ---------------------------------------------------------------------------
+
+# The control reads programs from a Samba share on eth1. Old Haas controls only speak SMB1 and NTLMv1, and find the
+# Pi by its name, so nmbd runs too.
+SMB_NAME="$(hostname | cut -c1-15 | tr '[:lower:]' '[:upper:]')"
+if [[ "$SHARE_PROGRAMS" == yes ]]; then
+    step "Sharing programs with the control"
+
+    sudo apt-get install -y -qq samba >/dev/null
+    ok "Samba installed"
+
+    mkdir -p "$PROGRAM_DIR"
+    getent passwd haas >/dev/null \
+        || sudo useradd --system --no-create-home --shell /usr/sbin/nologin haas
+    [[ -f /etc/samba/smb.conf.orig ]] || sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.orig
+    sudo tee /etc/samba/smb.conf >/dev/null <<EOF
+[global]
+   interfaces = lo eth1
+   bind interfaces only = yes
+   server min protocol = NT1
+   ntlm auth = ntlmv1-permitted
+   map to guest = never
+
+[programs]
+   path = ${PROGRAM_DIR}
+   valid users = haas
+   force user = ${APP_USER}
+   read only = no
+EOF
+    ok "/etc/samba/smb.conf written (the original is smb.conf.orig)"
+
+    if [[ -n "$HAAS_SMB_PASS" ]]; then
+        printf '%s\n%s\n' "$HAAS_SMB_PASS" "$HAAS_SMB_PASS" | sudo smbpasswd -a -s haas >/dev/null \
+            && ok "Samba user haas set" || warn "Could not set the Samba password for haas."
+    else
+        ok "Samba user haas kept"
+    fi
+
+    if command -v nmcli >/dev/null; then
+        NM_ARGS=(connection.interface-name eth1 ipv4.method manual ipv4.addresses "$HAAS_LINK_ADDR"
+                 ipv4.never-default yes ipv6.method disabled connection.autoconnect yes)
+        if nmcli -t -f NAME connection show | grep -qx haas; then
+            sudo nmcli connection modify haas "${NM_ARGS[@]}"
+        else
+            sudo nmcli connection add type ethernet con-name haas "${NM_ARGS[@]}" >/dev/null
+        fi
+        ok "eth1 set to ${HAAS_LINK_ADDR}"
+        sudo nmcli connection up haas >/dev/null 2>&1 \
+            || warn "eth1 isn't up yet. It comes up once the control's cable is in."
+    else
+        warn "NetworkManager isn't here. Give eth1 the address ${HAAS_LINK_ADDR} by hand."
+    fi
+
+    sudo systemctl enable smbd nmbd >/dev/null 2>&1 || true
+    sudo systemctl restart smbd nmbd || warn "Samba didn't start. Check: journalctl -u smbd"
+    ok "Sharing ${PROGRAM_DIR} as \\\\${SMB_NAME}\\programs"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Python environment
 # ---------------------------------------------------------------------------
 
 step "Setting up the virtual environment"
@@ -501,7 +847,7 @@ fi
 chmod +x "${APP_DIR}/main.py" "${APP_DIR}/emecamsupdate.sh" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 7b. Known compatibility fixes
+# 10b. Known compatibility fixes
 # ---------------------------------------------------------------------------
 
 step "Verifying the install"
@@ -567,7 +913,7 @@ if [[ -n "$HARDWARE_MODS" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 8. systemd service
+# 11. systemd service
 # ---------------------------------------------------------------------------
 
 step "Installing the systemd service"
@@ -643,6 +989,8 @@ cat <<EOF
 ${HEADLINE}
 
   Machine     ${MACHINE_ID} (${MACHINE_NAME})
+  Category    ${MACHINE_TYPE}, ${MACHINE_KIND}
+  Control     ${CONTROL}
   Install dir ${APP_DIR}
   Service     ${SERVICE_NAME}.service
 
@@ -653,6 +1001,11 @@ ${HEADLINE}
   I2C check      i2cdetect -y 1      (expect 3e and 60)
   SPI check      ls -l /dev/spidev*
 EOF
+
+if [[ "$SHARE_PROGRAMS" == yes ]]; then
+    printf '\n  On the control, set the Net Share to server name %s, share name programs,\n' "$SMB_NAME"
+    printf '  user name haas and Domain/Workgroup WORKGROUP. Use the name, not an IP.\n'
+fi
 
 if (( REBOOT_NEEDED )); then
     printf '\n%s[action needed]%s SPI and I2C were just enabled and do not exist yet.\n' "$C_YELLOW" "$C_RESET"
