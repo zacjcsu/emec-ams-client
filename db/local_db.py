@@ -80,7 +80,7 @@ class LocalDB:
         disabled_message = None
         if user_row and user_row["disabled_at"]:
             disabled_message = "\n".join(
-                filter(None, [user_row["disabled_line1"] or "User disabled", user_row["disabled_line2"]]))
+                filter(None, [user_row["disabled_line1"] or "User suspended", user_row["disabled_line2"]]))
         c.execute(
             "SELECT 1 FROM User_Groups ug JOIN Groups g ON g.group_name = ug.group_name "
             "WHERE ug.csu_id = ? AND g.enabled = 0", (csu_id,))

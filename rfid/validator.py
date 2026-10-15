@@ -54,7 +54,7 @@ def validate_card(csu_id, uid_num, db, lcd, temp=False, hold_until_removed=None)
         # user_disabled: `via` carries the dashboard's message, line 1, a newline, then an optional line 2.
         if reason == "user_disabled":
             line1, _, line2 = (via or "").partition("\n")
-            line1 = line1 or "User disabled"
+            line1 = line1 or "User suspended"
         elif reason == "outside_hours":
             line1, line2 = "Access Denied", "Outside hours"
         else:

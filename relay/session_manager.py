@@ -131,7 +131,7 @@ class SessionManager:
         if reason == "user_disabled":
             # The dashboard's own two-line message: line 1, a newline, an optional line 2.
             line1, _, line2 = (self.lockout.revoked_via or "").partition("\n")
-            line1, line2 = line1[:16] or "User disabled", line2[:16]
+            line1, line2 = line1[:16] or "User suspended", line2[:16]
         else:
             line1, line2 = REVOKED_MESSAGES.get(reason, ("Access revoked", str(reason)))
         if reason in QUIET_END_REASONS:
