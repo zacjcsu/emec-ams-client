@@ -57,7 +57,7 @@ def snapshot(values, mtc):
     if q500.startswith("STATUS BUSY"):
         state = "Running"
     elif m:
-        state = STATES.get(m.group(2), m.group(2).title())
+        state = STATES.get(m.group(2), m.group(2).capitalize())
     else:
         state = None
     condition = mtc.get("MachineCondition")

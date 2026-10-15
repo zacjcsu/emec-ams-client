@@ -52,6 +52,8 @@ check("feed move", d["motion"] == "Feed")
 check("coolant on", d["coolant"] is True)
 check("no program while busy on a classic", "program" not in d)
 
+d = snapshot(dict(IDLE, **{"Q500": "PROGRAM, O00100, DOOR HOLD, PARTS, 7788"}), {})
+check("other states in sentence case", d["state"] == "Door hold")
 d = snapshot(dict(IDLE, **{"Q500": "PROGRAM, MDI, ALARM ON, PARTS, 7788"}), {})
 check("classic alarm has no name", d["state"] == "Alarm" and d["alarm"] == {"code": "", "text": ""})
 d = snapshot(IDLE, dict(MTC, MachineCondition=("Fault", "1022", "SPINDLE NOT TURNING AT CORRECT SPEED"),
