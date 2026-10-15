@@ -136,5 +136,15 @@ sync.sync(server)
 check("a file in the way is skipped, the rest still sync", not server.programs["Job 3/Operation 1.nc"]["synced"]
       and server.programs["O8888.nc"]["synced"])
 
+server.upload("Move A/Inner/x.nc", "OX\nM30\n%\n")
+sync.sync(server)
+p = server.programs.pop("Move A/Inner/x.nc")
+server.programs["Move B/Inner/x.nc"] = {**p, "name": "Move B/Inner/x.nc", "synced": False}
+server.folders -= {"Move A", "Move A/Inner"}
+server.folders |= {"Move B", "Move B/Inner"}
+sync.sync(server)
+check("a moved folder ends up in its new place only", "OX" in read("Move B/Inner/x.nc") and "Move A" not in files()
+      and server.programs["Move B/Inner/x.nc"]["synced"])
+
 print("all passed" if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)
