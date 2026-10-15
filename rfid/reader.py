@@ -122,6 +122,7 @@ class NoReader(RFIDReader):
 
     def __init__(self, leds=None):
         self.leds = leds
+        self.reader = None   # the driver, which only writing a card on the reader uses
 
     def check_chip(self):
         pass
