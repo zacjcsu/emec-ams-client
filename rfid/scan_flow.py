@@ -27,6 +27,8 @@ REJECT_TEXT = {
     "read_failed": ("Card not valid", "See staff"),
 }
 
+HOLD_TEXT = ("Leave card on", "Wait for staff")   # a blank card waiting to be written as a temp card
+
 REOPEN_CHECK_SECONDS = 30  # how often a card held after hours asks whether its owner may use the machine again
 LOOKUP_TTL = 2.0      # seconds a lookup result is reused for a card that stays on the reader
 MISSES_TO_REMOVE = 3  # polls with no card before it counts as removed (debounce)
@@ -54,6 +56,7 @@ class ScanFlow:
         self._shown = False        # a rejection was already put on the LCD for this arrival
         self._denied = False       # this arrival was refused; do not retry until the card is removed and returns
         self._logged = False       # this arrival's refusal was sent to the scan log
+        self._holding = False      # HOLD_TEXT is on the LCD for this arrival
 
     def _refused(self, scan, csu_id, reason, at=None):
         if not self._logged:
@@ -67,11 +70,15 @@ class ScanFlow:
         self.activity.set_present(None)
 
     def no_card(self):
-        """Call on every idle poll that sees no card. After a few in a row the card counts as removed."""
+        """Call on every idle poll that sees no card. After a few in a row the card counts as removed.
+        True when a card that had HOLD_TEXT on the LCD has gone, so the caller should redraw its screen."""
         self._misses += 1
         if self._misses >= MISSES_TO_REMOVE and self._uid is not None:
+            held = self._holding
             self._reset_arrival(None)
             self.activity.set_present(None)
+            return held
+        return False
 
     def _hold_until_removed(self, recheck, csu_id, reason):
         """Hold a refusal on the LCD until the card leaves. True if `recheck` said access came back first.
@@ -151,7 +158,7 @@ class ScanFlow:
                     self._refused(scan, None, "maintenance")
         elif not self._denied:
             self._refused(scan, None, lk["reason"] if lk else "server_offline")
-        self._report_presence(scan)
+        self._report_presence(scan)    # HOLD_TEXT stays over the maintenance screen until the card goes
         return None, drew
 
     # ------------------------------------------------------------ not a student card
@@ -186,6 +193,8 @@ class ScanFlow:
                 started.bypass = temp_card_maintenance_bypass(scan.uid_hex, MACHINE_ID) is True
                 self.activity.set_present(None)
                 return started
+        elif self._report_presence(scan) or self._holding:
+            pass                      # a blank card: staff are about to write it, so it says to wait
         elif lk["reason"] in REJECT_TEXT:
             self._reject(*REJECT_TEXT[lk["reason"]])
         # unknown_card / not_temporary: silent, as any unrecognised card is today
@@ -196,17 +205,23 @@ class ScanFlow:
         return None
 
     def _report_presence(self, scan):
-        """Report a card that did not start a session, with the blank check done once per arrival."""
+        """Report a card that did not start a session, with the blank check done once per arrival.
+        A blank card gets HOLD_TEXT on the LCD. True when that was drawn just now."""
         if self._blank is None:
             try:
                 self._blank = self.io.is_blank()
             except CardLost:
-                return          # gone again; the next poll starts over
+                return False    # gone again; the next poll starts over
             except Exception:
                 logger.exception("[SCAN] Blank check failed")
                 self._blank = False
             logger.info(f"[SCAN] Card {scan.uid_hex} on the reader, blank={self._blank}")
         self.activity.set_present(scan.uid_hex, self._blank)
+        if self._blank and not self._holding:
+            self.lcd.display(*HOLD_TEXT, color="yellow")
+            self._holding = self._shown = True
+            return True
+        return False
 
     def _temp_login(self, scan, lk):
         """Steps 3 to 5 of the contract: read the secret with the issue's key, verify it, then the normal access check."""
@@ -254,7 +269,8 @@ class ScanFlow:
 
     # ------------------------------------------------------------ programming jobs
     def run_job(self, job):
-        """Program the card on the reader for a claimed job, report the outcome, and wait for the card to be removed."""
+        """Program the card on the reader for a claimed job and report the outcome. A card that is ready stays on
+        the reader and the next poll starts its session. Otherwise wait for it to be removed."""
         logger.info(f"[TEMP] Programming job {job['issue_id']} for card {job['card_uid']}")
         self.activity.set_present(None)
         self.lcd.display("Programming", "card...", color="yellow")
@@ -268,12 +284,15 @@ class ScanFlow:
         logger.info(f"[TEMP] Job {job['issue_id']}: ok={ok} detail={detail} server={answer}")
 
         if ok and answer == "active":
-            self.lcd.display("Card ready", "Remove card", color="green")
-        elif ok:
+            self.lcd.display("Card ready", "", color="green")
+            time.sleep(LCD_LINE_DELAY)
+            self._reset_arrival(None)   # read it again as a new arrival, now as a temp card
+            return
+        if ok:
             self.lcd.display("Card written", "See dashboard", color="yellow")
         else:
             self.lcd.display("Write failed", str(detail or "")[:16], color="red")
-        # The card stays on the reader after programming; do not let it start a session until it is removed.
+        # Don't let a card that isn't ready start a session until it is removed.
         self.reader.wait_until_removed(max_seconds=60)
         self._reset_arrival(None)
         self.lcd.display(*LCD_MESSAGES["startup_next"])

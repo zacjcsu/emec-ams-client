@@ -21,9 +21,9 @@ import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_DATA, MACHINE_ID, PROGRAM_FOLDER,
-                              READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE, STATUS_OFFLINE, UPDATE_AFTER_SESSION,
-                              UPDATE_FLAG)
+from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, LCD_MESSAGES, MACHINE_DATA, MACHINE_ID,
+                              PROGRAM_FOLDER, READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE, STATUS_OFFLINE,
+                              UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -194,8 +194,8 @@ def main():
                     started, drew = flow.process_maintenance(scan) if scan else (None, False)
                     if started:
                         break
-                    if not scan:
-                        flow.no_card()
+                    if not scan and flow.no_card():
+                        drew = True
                     if drew:
                         idle.reset()
                     idle.tick()
@@ -210,7 +210,9 @@ def main():
                         startup_sequence(lcd, db)   # a refused student card: refresh the cache and the screen
                     idle.reset()
                 else:
-                    flow.no_card()
+                    if flow.no_card():
+                        lcd.display(*LCD_MESSAGES["startup_next"])
+                        idle.reset()
                     idle.tick()
                 time.sleep(CARD_POLL_INTERVAL)
 
