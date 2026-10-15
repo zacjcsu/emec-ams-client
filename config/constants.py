@@ -64,6 +64,19 @@ def load_program_folder():
     return folder if folder and os.path.isdir(folder) else None
 
 PROGRAM_FOLDER = load_program_folder()
+
+
+def load_fitted():
+    """Whether the screen and the card reader are fitted, from "screen" and "reader" in config.json. Both are unless
+    set to false."""
+    try:
+        with open("config/config.json", "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    return data.get("screen", True) is not False, data.get("reader", True) is not False
+
+SCREEN_FITTED, READER_FITTED = load_fitted()
 PROGRAM_MANIFEST = "data/programs.json"
 PROGRAM_POLL_SECONDS = 5
 

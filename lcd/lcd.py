@@ -77,3 +77,20 @@ class LCD:
             self.lcd.clear()
         except OSError:
             pass
+
+
+class NoScreen:
+    """For a machine with no screen fitted ("screen": false in config.json). Never down, so nothing reports it."""
+    down = False
+
+    def display(self, line1="", line2="", color="white"):
+        pass
+
+    def refresh(self):
+        pass
+
+    def retry(self):
+        return True
+
+    def clear(self):
+        pass

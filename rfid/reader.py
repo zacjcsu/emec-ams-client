@@ -114,3 +114,20 @@ class RFIDReader:
 
     def cleanup(self):
         GPIO.cleanup()
+
+
+class NoReader(RFIDReader):
+    """For a machine with no card reader fitted ("reader": false in config.json). It never sees a card, so no session
+    starts from a card."""
+
+    def __init__(self, leds=None):
+        self.leds = leds
+
+    def check_chip(self):
+        pass
+
+    def read_card_ex(self):
+        return None
+
+    def cleanup(self):
+        pass

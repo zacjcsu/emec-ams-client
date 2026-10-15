@@ -2,13 +2,13 @@
 
 from utils import hardware_stubs  # noqa: F401  (must be imported first, see utils/hardware_stubs.py)
 from utils.startup_check import startup_sequence
-from rfid.reader import RFIDReader
+from rfid.reader import NoReader, RFIDReader
 from rfid.scan_flow import ScanFlow, SessionStart
 from utils.card_activity import CardActivity
 from relay.session_manager import SessionManager, recover_orphaned_sessions, QUIET_END_REASONS
 from relay.kinds import load_kind
 from relay.controller import RelayController
-from lcd.lcd import LCD
+from lcd.lcd import LCD, NoScreen
 from utils.leds import StatusLEDs
 from utils.idle_display import IdleDisplay
 from utils.lockout import LockoutMonitor
@@ -22,7 +22,8 @@ import signal
 import sys
 from db.local_db import LocalDB
 from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, MACHINE_DATA, MACHINE_ID, PROGRAM_FOLDER,
-                              STATUS_MAINTENANCE, STATUS_OFFLINE, UPDATE_AFTER_SESSION, UPDATE_FLAG)
+                              READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE, STATUS_OFFLINE, UPDATE_AFTER_SESSION,
+                              UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -54,11 +55,14 @@ if clean:
 logger.info("[STARTUP] EMEC-AMS starting (machine_id=%s, kind=%s)", MACHINE_ID, kind.name,
             extra={"code": "app_restart" if clean else "app_start"})
 
-lcd = LCD()
+for part, fitted in (("screen", SCREEN_FITTED), ("card reader", READER_FITTED)):
+    if not fitted:
+        logger.info(f"[STARTUP] No {part}, as set in config.json.")
+lcd = LCD() if SCREEN_FITTED else NoScreen()
 db = LocalDB()
 relay = RelayController()
 leds = StatusLEDs()
-reader = RFIDReader(leds=leds)
+reader = RFIDReader(leds=leds) if READER_FITTED else NoReader(leds=leds)
 lockout = LockoutMonitor(relay, kind)
 heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
