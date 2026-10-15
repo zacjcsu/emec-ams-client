@@ -2,8 +2,8 @@
 
 The NGC answers Q commands over TCP on the port in its Setting 143. The classic control (Coldfire, Maincon) answers
 the same commands on its RS-232 port when Setting 143 is On. Neither sends anything unprompted. Each answer is logged
-when it changes, with the raw bytes, and every command is logged again every SNAPSHOT_SECONDS. Nothing acts on the
-values yet. The log is for working out what this control reports.
+when it changes, with the raw bytes, and every command is logged again every SNAPSHOT_SECONDS.
+utils/live_state.py sends the current values to the dashboard.
 
 On each connect it also asks a wider set once (DISCOVER_NGC or DISCOVER_CLASSIC). An NGC's MTConnect pages are saved
 as logs/mtconnect-probe.xml and logs/mtconnect-current.xml, if it serves them.
@@ -206,8 +206,9 @@ def data_log(path="logs/machine_data.log"):
 
 
 class HaasMonitor:
-    """Polls the control in its own thread. `values` holds the last clean answer to each command.
-    Make one with HaasMonitor.ngc or HaasMonitor.classic."""
+    """Polls the control in its own thread. `values` holds the last clean answer to each command, and `mtc` the last
+    value of each MTConnect item. A condition's is (level, alarm number, text). Make one with HaasMonitor.ngc or
+    HaasMonitor.classic."""
 
     def __init__(self, client, fast, discover, mtconnect=False, poll_seconds=2, log=None):
         self.client = client
@@ -219,6 +220,7 @@ class HaasMonitor:
         self.poll_seconds = float(poll_seconds)
         self.log = log or data_log()
         self.values = {}
+        self.mtc = {}
         self.connected = False
         self._failing = False
         self._stop = threading.Event()
@@ -293,6 +295,7 @@ class HaasMonitor:
             if not self._mtc_failing:
                 self.log.info(f"MTConnect: {e}")
             self._mtc_failing, self._mtc_next = True, None
+            self.mtc = {}
             return
         self._mtc_failing = False
         if current and next_ == self._mtc_next:
@@ -302,10 +305,15 @@ class HaasMonitor:
         items = sorted((int(e.get("sequence")), e) for e in root.iter() if e.get("sequence"))
         for seq, e in items:
             tag = e.tag.split("}")[-1]
+            name = e.get("name") or e.get("dataItemId")
             value = (e.text or "").strip()
+            code = e.get("nativeCode") or ""
             if e.get("type"):   # a condition: Normal, Warning or Fault, with the alarm's text
+                self.mtc[name] = (tag, code, value)
                 value = f"{tag} {value}".strip()
-            self.log.info(f"MTConnect {e.get('name') or e.get('dataItemId')} = {value!r}  at {e.get('timestamp')}"
+            else:
+                self.mtc[name] = value
+            self.log.info(f"MTConnect {name} = {value!r}  at {e.get('timestamp')}" + (f"  code={code}" if code else "")
                           + ("  (current)" if current else ""))
         self._mtc_next = next_
 
@@ -340,6 +348,6 @@ class HaasMonitor:
                 elif not self._failing:
                     logger.info(f"[HAAS] Cannot reach {self.client.name}: {e}.")
                 self.connected, self._failing = False, True
-                self.values = {}
+                self.values, self.mtc = {}, {}
                 self.client.close()
                 self._stop.wait(RETRY_SECONDS)
