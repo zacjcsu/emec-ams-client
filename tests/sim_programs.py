@@ -99,5 +99,27 @@ sync.sync(server)
 check("a name with a path is skipped", files() == ["HAAS1.nc", "O7777.nc"] and not os.path.exists(os.path.join(work, "evil")))
 check("no temp files left", not any(f.startswith(".") for f in files()))
 
+server.upload("Job 1/Operation 1.nc", "O1\nM30\n%\n")
+server.upload("Job 1/Fixture/Operation 2.nc", "O2\nM30\n%\n")
+server.upload("Job 2/Operation 1.nc", "O3\nM30\n%\n")
+sync.sync(server)
+check("writes into folders", "O1" in read("Job 1/Operation 1.nc") and "O2" in read("Job 1/Fixture/Operation 2.nc")
+      and "O3" in read("Job 2/Operation 1.nc"))
+check("same name in two folders", server.programs["Job 2/Operation 1.nc"]["synced"])
+check("no temp files in folders", not any(f.startswith(".") for f in os.listdir(os.path.join(folder, "Job 1"))))
+
+open(os.path.join(folder, "Job 2", "HAAS2.nc"), "w").write("saved on the control\n")
+del server.programs["Job 1/Operation 1.nc"], server.programs["Job 1/Fixture/Operation 2.nc"]
+del server.programs["Job 2/Operation 1.nc"]
+sync.sync(server)
+check("an emptied folder goes, one with the control's file stays", "Job 1" not in files() and os.listdir(os.path.join(folder, "Job 2")) == ["HAAS2.nc"])
+
+open(os.path.join(folder, "Job 3"), "w").write("a file named like a folder\n")
+server.upload("Job 3/Operation 1.nc", "O4\nM30\n%\n")
+server.upload("O8888.nc", "O8888\nM30\n%\n")
+sync.sync(server)
+check("a file in the way is skipped, the rest still sync", not server.programs["Job 3/Operation 1.nc"]["synced"]
+      and server.programs["O8888.nc"]["synced"])
+
 print("all passed" if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)
