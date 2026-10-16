@@ -50,16 +50,19 @@ def startup_sequence(lcd, db):
         push_machine_status(db, MACHINE_ID)
         logger.warning(f"[WARN] Machine {MACHINE_ID} not found. Inserting default.")
 
+    # A new Pi starts in maintenance, and the dashboard still needs its address and serial.
+    db.update_machine_device(MACHINE_ID, DEVICE_ID)
+    db.update_machine_ip(MACHINE_ID, device_ip)
     machine = db.get_machine(MACHINE_ID)
     if machine["machine_status"] == STATUS_MAINTENANCE:
+        if online:
+            push_machine_status(db, MACHINE_ID)
         lcd.display(*LCD_MESSAGES["maintenance"], color="yellow")
         logger.warning("[HALT] Machine in maintenance mode.")
         return False
 
     db.update_machine_status(MACHINE_ID, STATUS_NEUTRAL)
     db.update_machine_heartbeat(MACHINE_ID)
-    db.update_machine_device(MACHINE_ID, DEVICE_ID)
-    db.update_machine_ip(MACHINE_ID, device_ip)
     if online:
         push_machine_status(db, MACHINE_ID)
     logger.info(f"[PASS] Machine {MACHINE_ID} is neutral, heartbeat and address updated.")
