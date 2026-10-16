@@ -462,9 +462,14 @@ SCREEN="${SCREEN:-}"; READER="${READER:-}"
 ask_choice SCREEN "Screen fitted" "${CFG_SCREEN:-yes}" yes no
 ask_choice READER "Card reader fitted" "${CFG_READER:-yes}" yes no
 
-info "Contactor switch: true reads an open circuit as on. inverted reads a closed circuit as on."
+# A CNC's relay is in series with cycle start, so it has no contactor switch unless this Pi already had one.
 CONTACTOR_SWITCH="${CONTACTOR_SWITCH:-}"; CONTACTOR_PIN="${CONTACTOR_PIN:-}"
-ask_choice CONTACTOR_SWITCH "Contactor switch" "${CFG_CONTACTOR:-none}" none true inverted
+if [[ "$MACHINE_KIND" == cnc && "${CFG_CONTACTOR:-none}" == none && -z "$CONTACTOR_SWITCH" ]]; then
+    CONTACTOR_SWITCH="none"
+else
+    info "Contactor switch: true reads an open circuit as on. inverted reads a closed circuit as on."
+    ask_choice CONTACTOR_SWITCH "Contactor switch" "${CFG_CONTACTOR:-none}" none true inverted
+fi
 if [[ "$CONTACTOR_SWITCH" != none ]]; then
     ask_number CONTACTOR_PIN "Contactor header pin (ground is pin 39)" "${CFG_PIN:-37}"
 fi
@@ -482,13 +487,24 @@ case "$CONTROL" in
         [[ -z "$HAAS_HOST" ]] && ask HAAS_HOST "Haas address" "${CFG_HAAS_HOST:-192.168.50.2}"
         ask_number HAAS_PORT "Haas port" "${CFG_HAAS_PORT:-5051}" ;;
     haas-classic)
-        [[ -z "$SERIAL_DEVICE" ]] && ask SERIAL_DEVICE "Serial device" "${CFG_SERIAL_DEVICE:-/dev/ttyUSB0}"
+        # The adapter's name under /dev/serial/by-id stays the same when other USB devices come and go.
+        DEF_SERIAL="/dev/ttyUSB0"
+        SERIAL_IDS=(/dev/serial/by-id/*)
+        if [[ -e "${SERIAL_IDS[0]}" ]]; then
+            info "Serial adapters:"
+            printf '      %s\n' "${SERIAL_IDS[@]}"
+            (( ${#SERIAL_IDS[@]} == 1 )) && DEF_SERIAL="${SERIAL_IDS[0]}"
+        else
+            info "No serial adapter is plugged in. Its name is under /dev/serial/by-id once it is."
+        fi
+        [[ -z "$SERIAL_DEVICE" ]] && ask SERIAL_DEVICE "Serial device" "${CFG_SERIAL_DEVICE:-$DEF_SERIAL}"
         ask_number SERIAL_BAUD "Serial baud" "${CFG_SERIAL_BAUD:-9600}" ;;
 esac
 
 SHARE_PROGRAMS="${SHARE_PROGRAMS:-}"
 HAAS_SMB_PASS="${HAAS_SMB_PASS:-}"
-if [[ "$MACHINE_KIND" == cnc || "$CONTROL" == haas-* ]]; then
+# Only an NGC control reads programs from a network share. A classic one has only its RS-232 port here.
+if [[ "$CONTROL" == haas-ngc ]]; then
     ask_choice SHARE_PROGRAMS "Share programs with the control" yes yes no
 else
     SHARE_PROGRAMS="${SHARE_PROGRAMS:-no}"
