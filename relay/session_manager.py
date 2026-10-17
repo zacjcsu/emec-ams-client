@@ -103,7 +103,8 @@ class SessionManager:
             if cardless_id:
                 self.lockout.watch_cardless(cardless_id)
             else:
-                self.lockout.watch(csu_id, card_uid if temp else None, bypass_maintenance=self.active_bypass)
+                self.lockout.watch(csu_id, card_uid if temp else None, bypass_maintenance=self.active_bypass,
+                                   session_id=self.active_session_id)
         self._sync_machine_status(STATUS_IN_USE, csu_id)
 
         self.relay.turn_on()
@@ -128,7 +129,7 @@ class SessionManager:
 
     def end_for_lockout(self, reason):
         logger.warning(f"[SESSION] Ending session: {reason}.")
-        if reason == "user_disabled":
+        if reason in ("user_disabled", "session_suspended"):
             # The dashboard's own two-line message: line 1, a newline, an optional line 2.
             line1, _, line2 = (self.lockout.revoked_via or "").partition("\n")
             line1, line2 = line1[:16] or "User suspended", line2[:16]
@@ -140,8 +141,8 @@ class SessionManager:
             self.show(line1, line2, color="red")
             self.force_end_session(quiet=True)
             return
-        if reason == "outside_hours":
-            # "Lab closed / Session ended" stays up; the machine's kind decides how long.
+        if reason in ("outside_hours", "session_suspended"):
+            # The message stays up; the machine's kind decides how long.
             self.show(line1, line2, color="red")
             self.force_end_session(quiet=True)
             return

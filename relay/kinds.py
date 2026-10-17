@@ -55,6 +55,9 @@ class Attended:
             if reason == "outside_hours":
                 # "Lab closed / Session ended" stays up until the card is removed, even once hours open.
                 session.hold_card(*card)
+            elif reason == "session_suspended":
+                # The user isn't suspended, so the card would start a new session at once. It has to come out first.
+                reader.wait_until_removed(poll=0.3)
         return reason
 
     def _watch_card(self, session, reader):

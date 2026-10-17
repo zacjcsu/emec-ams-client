@@ -413,6 +413,56 @@
     7.0 unwatch
     7.0 relay off
     7.0 ended user_disabled session False
+=== session suspended, card held
+    0.0 unwatch
+    0.0 db mark_user_used 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+    7.0 lcd 'User suspended' '' red
+    7.0 db end_session <session>
+    7.0 db mark_user_used 830000001
+    7.0 db update_machine_status unknown
+    7.0 db update_machine_heartbeat unknown
+    7.0 server push_user_status
+    7.0 server push_machine_status
+    7.0 server sync_session_to_server
+    7.0 unwatch
+    7.0 relay off
+   21.1 ended session_suspended session False
+=== session suspended during grace
+    0.0 unwatch
+    0.0 db mark_user_used 830000001
+    0.0 db insert_session <session>
+    0.0 server push_session_start
+    0.0 watch 830000001 None False
+    0.0 db update_machine_status unknown
+    0.0 db update_machine_heartbeat unknown
+    0.0 server push_user_status
+    0.0 server push_machine_status
+    0.0 relay on
+    0.0 lcd 'Test User' 'in use' green
+    7.0 lcd 'Card removed' 'Waiting for reinsert' yellow
+    7.0 lcd 'Remove detected' 'Reinsert: 10s' yellow
+    8.0 lcd 'Remove detected' 'Reinsert: 9s' yellow
+    9.0 lcd 'Remove detected' 'Reinsert: 8s' yellow
+   10.0 lcd 'Stop' 'See staff' red
+   10.0 db end_session <session>
+   10.0 db mark_user_used 830000001
+   10.0 db update_machine_status unknown
+   10.0 db update_machine_heartbeat unknown
+   10.0 server push_user_status
+   10.0 server push_machine_status
+   10.0 server sync_session_to_server
+   10.0 unwatch
+   10.0 relay off
+   10.9 ended session_suspended session False
 === group disabled
     0.0 unwatch
     0.0 db mark_user_used 830000001

@@ -78,7 +78,7 @@ class Lockout:
         if name in ("estop_active", "maintenance_active", "revoked_reason", "revoked_via", "cardless_stop"):
             self._apply(); return self._state[name]
         raise AttributeError(name)
-    def watch(self, csu, card=None, bypass_maintenance=False):
+    def watch(self, csu, card=None, bypass_maintenance=False, session_id=None):
         self.bypass_maintenance = bool(bypass_maintenance and card); ev("watch", csu, card, self.bypass_maintenance)
     def watch_cardless(self, cardless_id):
         self.bypass_maintenance = True; ev("watch_cardless", cardless_id)
@@ -135,6 +135,10 @@ SCENARIOS = {
     "lab closes during grace": dict(reader=[(0, STUDENT), (4, None)], lockout=[(10, "revoked_reason", "outside_hours")]),
     "emergency shutdown": dict(reader=[(0, STUDENT)], lockout=[(6, "estop_active", True)]),
     "user disabled": dict(reader=[(0, STUDENT)], lockout=[(7, "revoked_via", "Gone\nSee staff"), (7, "revoked_reason", "user_disabled")]),
+    "session suspended, card held": dict(reader=[(0, STUDENT), (20, None)],
+                                         lockout=[(7, "revoked_via", "User suspended\n"), (7, "revoked_reason", "session_suspended")]),
+    "session suspended during grace": dict(reader=[(0, STUDENT), (4, None)],
+                                           lockout=[(10, "revoked_via", "Stop\nSee staff"), (10, "revoked_reason", "session_suspended")]),
     "group disabled": dict(reader=[(0, STUDENT)], lockout=[(7, "revoked_reason", "group_disabled")]),
     "permission revoked": dict(reader=[(0, STUDENT)], lockout=[(9, "revoked_reason", "no_permission")]),
     "maintenance, no bypass": dict(reader=[(0, STUDENT)], lockout=[(5, "maintenance_active", True)]),

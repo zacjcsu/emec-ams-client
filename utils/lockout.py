@@ -26,6 +26,9 @@ class LockoutMonitor:
       the server's access_decision_machine() is asked about them every ACCESS_RECHECK_SECONDS. If they
       no longer have access (lab closed, group disabled, permission revoked) `revoked_reason` is set for the
       session loop to end the session, and the relay is cut if the machine's kind says to.
+    * Session suspended (dashboard migration 085): on the same schedule, session_suspension() is asked about the
+      watched session. If the dashboard suspended it, `revoked_reason` is 'session_suspended' and `revoked_via` has
+      the two lines to show. The user is not suspended, so their card works again once it is put back.
     * Cardless access (dashboard migration 043): while idle, a request started from the dashboard is claimed
       and waits for the main loop (take_cardless()). While one runs (watch_cardless()), maintenance doesn't
       stop it, and `cardless_stop` is set when the dashboard stops it or its time is up.
@@ -49,6 +52,8 @@ class LockoutMonitor:
         self.revoked_via = None  # the server's `via` for that reason (a disabled user's two-line message)
         self._watched = None  # csu_id of the user on the machine
         self._watched_card = None  # UID of the temporary card they signed in with, if any
+        self._watched_session = None  # session_id of their session
+        self._suspension_failing = False
         self.bypass_maintenance = False  # the watched session may run while this machine is in maintenance
         self._cardless = None  # id of the cardless session running now
         self._cardless_job = None  # (id, monotonic time) of a claimed request the main loop hasn't started
@@ -63,15 +68,17 @@ class LockoutMonitor:
     def stop(self):
         self._stop.set()
 
-    def watch(self, csu_id, temp_card_uid=None, bypass_maintenance=False):
+    def watch(self, csu_id, temp_card_uid=None, bypass_maintenance=False, session_id=None):
         """Start watching a session. For a temporary card, also pass its UID: the card itself is re-checked
         (lost, revoked, expired) as well as the person's access."""
         with self._lock:
-            if self._watched != str(csu_id) or self._watched_card != temp_card_uid:
+            if (self._watched != str(csu_id) or self._watched_card != temp_card_uid
+                    or self._watched_session != session_id):
                 self.revoked_reason = None
                 self.revoked_via = None
             self._watched = str(csu_id)
             self._watched_card = temp_card_uid
+            self._watched_session = session_id
             self.bypass_maintenance = bool(bypass_maintenance and temp_card_uid)
         self.relay.set_lockout(self._relay_should_lock())
 
@@ -79,6 +86,7 @@ class LockoutMonitor:
         with self._lock:
             self._watched = None
             self._watched_card = None
+            self._watched_session = None
             self.revoked_reason = None
             self.revoked_via = None
             self.bypass_maintenance = False
@@ -91,6 +99,7 @@ class LockoutMonitor:
         with self._lock:
             self._watched = None
             self._watched_card = None
+            self._watched_session = None
             self.revoked_reason = None
             self.revoked_via = None
             self._cardless = cardless_id
@@ -146,6 +155,34 @@ class LockoutMonitor:
             logger.info(f"[LOCKOUT] Maintenance message: {message}")
             self.message = message
 
+    def _check_suspended(self, conn, session_id):
+        """True if the dashboard suspended this session."""
+        try:
+            row = conn.execute("SELECT line1, line2 FROM session_suspension(%s)", (session_id,)).fetchone()
+        except psycopg.OperationalError:
+            raise
+        except psycopg.Error as e:
+            # A server without migration 085. The access check below still runs.
+            if not self._suspension_failing:
+                logger.warning(f"[LOCKOUT] Cannot check for a suspended session: {e}")
+                self._suspension_failing = True
+            return False
+        self._suspension_failing = False
+        if not row:
+            return False
+        with self._lock:
+            if self._watched_session != session_id:  # session ended or changed while we were asking
+                return False
+            first = self.revoked_reason != "session_suspended"
+            self.revoked_reason = "session_suspended"
+            self.revoked_via = f"{row['line1']}\n{row['line2']}"
+        cut = self.kind.cut_power_on_revoke("session_suspended")
+        if cut:
+            self.relay.turn_off()
+        if first:
+            logger.warning(f"[LOCKOUT] Session {session_id} suspended from the dashboard" + (": relay off." if cut else "."))
+        return True
+
     def _check_access(self, conn, csu_id, temp_card_uid=None):
         row = None
         if temp_card_uid:
@@ -192,7 +229,7 @@ class LockoutMonitor:
                 self._read_message(conn)
 
                 with self._lock:
-                    watched, watched_card = self._watched, self._watched_card
+                    watched, watched_card, watched_session = self._watched, self._watched_card, self._watched_session
                     cardless, job = self._cardless, self._cardless_job
                 if cardless:
                     state = cardless_check(cardless, conn)
@@ -206,9 +243,10 @@ class LockoutMonitor:
                         logger.info(f"[LOCKOUT] Claimed cardless access {claimed}")
                         with self._lock:
                             self._cardless_job = (claimed, time.monotonic())
-                if (ENFORCE_ACCESS_DURING_SESSION and watched
-                        and time.monotonic() - last_access_check >= ACCESS_RECHECK_SECONDS):
-                    self._check_access(conn, watched, watched_card)
+                if watched and time.monotonic() - last_access_check >= ACCESS_RECHECK_SECONDS:
+                    suspended = watched_session and self._check_suspended(conn, watched_session)
+                    if ENFORCE_ACCESS_DURING_SESSION and not suspended:
+                        self._check_access(conn, watched, watched_card)
                     last_access_check = time.monotonic()
 
                 if failing:
