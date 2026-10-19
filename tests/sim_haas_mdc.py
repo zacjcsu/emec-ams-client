@@ -157,8 +157,9 @@ mon._thread.join(10)
 
 
 class FakeClassic:
-    """The same answers on a pseudo-terminal. `off` stops it answering, like a machine switched off.
-    `recv` is RECV: it answers nothing and stores what comes from the first % to the next in `received`."""
+    """Answers like the TM-2P on a pseudo-terminal: its prompt, then the frame. `off` stops it answering, like a
+    machine switched off. `recv` is RECV: it answers nothing and stores what comes from the first % to the next in
+    `received`. `delay` holds each frame back after the prompt. `stale` goes out once before the next frame."""
 
     def __init__(self):
         self.master, self.slave = os.openpty()   # holding the slave open keeps the master readable
@@ -167,6 +168,8 @@ class FakeClassic:
         self.recv = threading.Event()
         self.received = None
         self.pause_after = None   # in RECV, send XOFF after this many bytes and XON a second later
+        self.delay = 0
+        self.stale = None
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
@@ -191,7 +194,13 @@ class FakeClassic:
                 if self.off.is_set():
                     continue
                 cmd = line.decode().lstrip("?")
-                answer = STATE.get(cmd, "SERIAL NUMBER, 7654321" if cmd == "Q100" else f"?, ?{cmd}")
+                unknown = f"MACRO, {cmd[5:]}, INVALID" if cmd.startswith("Q600 ") else "UNKNOWN"
+                answer = STATE.get(cmd, "SERIAL NUMBER, 7654321" if cmd == "Q100" else unknown)
+                os.write(self.master, b"\r\n\r\n>\r\n")
+                time.sleep(self.delay)
+                if self.stale:
+                    os.write(self.master, self.stale)
+                    self.stale = None
                 os.write(self.master, b"\x02" + answer.encode() + b"\x17\r\n>")
 
 
@@ -219,10 +228,36 @@ classic.off.clear()
 check("classic: connects when the machine answers", wait_for(lambda: mon.values.get("Q500") == STATE["Q500"]))
 attrs = termios.tcgetattr(mon.client.fd)
 check("classic: port set to 9600 with XON/XOFF", attrs[4] == termios.B9600 and attrs[0] & termios.IXON)
-check("classic: discover pass logged", "Q600 1000 = '?, ?Q600 1000'" in log())
+check("classic: discover pass logged", "Q600 1000 = 'MACRO, 1000, INVALID'" in log())
 check("classic: no MTConnect", "MTConnect" not in log())
 STATE["Q500"] = "STATUS BUSY"
 check("classic: a change is logged", wait_for(lambda: "STATUS BUSY" in log()))
+check("classic: no prompt left in a value", not any(v.startswith(">") for v in mon.values.values()))
+
+STATE["Q600 3027"] = "MACRO, 3027, 1200.000000"
+classic.delay = 0.6   # longer than QUIET_SECONDS
+check("classic: a frame that comes late still lands on its command",
+      wait_for(lambda: mon.values.get("Q600 3027") == STATE["Q600 3027"], 20))
+classic.delay = 0
+for stale in (b"\x02MACRO, 3, -16777215.000000\x17\r\n>", b"\x02MACRO, 4294967295, INVALID\x17\r\n>"):
+    classic.stale = stale
+    check(f"classic: a stray frame is dropped and logged", wait_for(lambda: classic.stale is None)
+          and wait_for(lambda: stale[1:-5].decode() in log() and "dropped" in log()))
+time.sleep(1)
+check("classic: no value came from a stray frame",
+      all(v == STATE.get(k, v) for k, v in mon.values.items()) and not any("4294967295" in v for v in mon.values.values()))
+check("haas: belongs", haas_mdc.belongs("Q600 3027", "MACRO, 3027, 1.0") and haas_mdc.belongs("Q600 3027", "MACRO, 1.0")
+      and not haas_mdc.belongs("Q600 3027", "MACRO, 3, 1.0") and not haas_mdc.belongs("Q500", "MACRO, 3027, 1.0")
+      and haas_mdc.belongs("Q500", "PROGRAM,O1,IDLE,PARTS,3") and not haas_mdc.belongs("Q600 3027", "MODE, MEM")
+      and haas_mdc.belongs("Q600 3027", "UNKNOWN"))
+
+STATE["Q600 1008"] = "MACRO, 1008,       1.000000"
+STATE["Q600 1105"] = "MACRO, 1105,       0.000000"
+check("classic: polls the door switch and coolant pump",
+      wait_for(lambda: mon.values.get("Q600 1008") == STATE["Q600 1008"] and mon.values.get("Q600 1105") == STATE["Q600 1105"]))
+from utils import live_state  # noqa: E402
+snap = live_state.snapshot(mon.values, {})
+check("classic: door open and coolant off on the dashboard", snap.get("door_open") is True and snap.get("coolant") is False)
 classic.off.set()
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
 classic.off.clear()

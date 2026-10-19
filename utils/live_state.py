@@ -73,7 +73,7 @@ def snapshot(values, mtc):
         if active and active != "NO ACTIVE ALARMS":
             text = text or active
         alarm = {"code": code, "text": text}
-    doors = [_macro(values, v) for v in (11066, 11067) if f"Q600 {v}" in values]
+    doors = [_macro(values, v) for v in (11066, 11067, 1008) if f"Q600 {v}" in values]   # 1008 on a classic
     motion = _macro(values, 4001)
     remaining = _number(mtc.get("CycleRemainingTime"))
     data = {
@@ -86,7 +86,7 @@ def snapshot(values, mtc):
         "rpm": _macro(values, 3027),
         "load": _macro(values, 1098),
         "motion": None if motion is None else "Rapid" if motion == 0 else "Feed",
-        "coolant": _flag(_macro(values, 12018)),
+        "coolant": _flag(_macro(values, 12018 if "Q600 12018" in values else 1105)),
         "door_open": any(doors) if doors else None,
         "estop": {"TRIGGERED": True, "ARMED": False}.get(mtc.get("EmergencyStop")),
         "single_block": _flag(_macro(values, 3030)),

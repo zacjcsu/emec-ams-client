@@ -38,6 +38,8 @@ logger = logging.getLogger("haas")
 FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001")
 # The NGC adds coolant pump, right door and left door. The door inputs are the TM-1P's.
 FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
+# The classic adds its door switch and coolant pump.
+FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105")
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
     "Q100",        # serial number
@@ -84,6 +86,15 @@ def clean(raw):
     return text.strip().strip(">").strip()
 
 
+def belongs(command, text):
+    """False for a framed answer to some other command: a macro with another number, or a macro for a Q command.
+    A late answer or a command that lost characters gives those."""
+    m = re.match(r"MACRO,\s*(?:(\d+)\s*,)?", text)
+    if command.startswith("Q600 "):
+        return text == "UNKNOWN" or bool(m) and m.group(1) in (None, command.split()[1])
+    return not m
+
+
 def haas_text(content):
     """A program as the control takes it: CR LF line ends, between lines of %. It ignores anything before the first %
     and stops at the next."""
@@ -116,6 +127,8 @@ class HaasClient:
     """One link to the control. Not thread safe. Subclasses open the link and move the bytes."""
 
     name = ""
+    framed = False   # answers come between STX and ETB
+    skipped = b""    # frames the last ask() dropped as not its own
 
     def connect(self):
         raise NotImplementedError
@@ -136,9 +149,12 @@ class HaasClient:
             pass
 
     def ask(self, command):
-        """Send '?<command>' and return the raw answer, b'' if none came. Raises OSError if the link is down."""
+        """Send '?<command>' and return the raw answer, b'' if none came. Raises OSError if the link is down.
+        A framed control's answer is only its own frame."""
         self._drain()
         self._send(f"?{command}\r\n".encode("ascii"))
+        if self.framed:
+            return self._ask_framed(command)
         raw = b""
         deadline = time.monotonic() + ANSWER_SECONDS
         while time.monotonic() < deadline:
@@ -152,6 +168,22 @@ class HaasClient:
             if clean(raw) and raw.rstrip(b" ").endswith((b"\n", b">")):
                 break
         return raw
+
+    def _ask_framed(self, command):
+        # The classic sends its prompt first and the frame up to a second later, so waiting for quiet isn't enough.
+        raw, self.skipped = b"", b""
+        deadline = time.monotonic() + ANSWER_SECONDS
+        while time.monotonic() < deadline:
+            chunk = self._recv(max(0.01, deadline - time.monotonic()))
+            if not chunk:
+                continue
+            raw += chunk
+            while (m := re.search(rb"\x02(.*?)\x17", raw, re.S)):
+                raw = raw[m.end():]
+                if belongs(command, clean(m.group(0))):
+                    return m.group(0)
+                self.skipped += m.group(0)
+        return b""
 
 
 class TcpClient(HaasClient):
@@ -188,6 +220,7 @@ class TcpClient(HaasClient):
 class SerialClient(HaasClient):
     """An RS-232 port, through a USB adapter and a null modem cable."""
 
+    framed = True
     PARITY = {"none": 0, "even": termios.PARENB, "odd": termios.PARENB | termios.PARODD}
 
     def __init__(self, device, baud=9600, parity="none", data_bits=8, stop_bits=1):
@@ -310,7 +343,7 @@ class HaasMonitor:
 
     @classmethod
     def classic(cls, device, baud=9600, parity="none", data_bits=8, stop_bits=1, poll_seconds=2, log=None):
-        return cls(SerialClient(device, baud, parity, data_bits, stop_bits), FAST, DISCOVER_CLASSIC, False,
+        return cls(SerialClient(device, baud, parity, data_bits, stop_bits), FAST_CLASSIC, DISCOVER_CLASSIC, False,
                    poll_seconds, log)
 
     @property
@@ -385,6 +418,8 @@ class HaasMonitor:
 
     def _poll(self, command, always=False):
         raw = self.client.ask(command)
+        if self.client.skipped:
+            self.log.info(f"{command} dropped {self.client.skipped!r}")
         value = clean(raw)
         if always or self.values.get(command) != value:
             self.log.info(f"{command} = {value!r}  raw={raw!r}" + ("  (snapshot)" if always else ""))
