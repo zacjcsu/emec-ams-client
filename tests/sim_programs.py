@@ -22,11 +22,13 @@ def check(name, ok):
 
 
 class FakeServer:
-    """The three statements ProgramSync sends, over a dict of programs by name."""
+    """The statements ProgramSync sends, over a dict of programs by name and one of cnc_share_files by name."""
 
     def __init__(self):
         self.programs = {}
         self.folders = set()
+        self.share = {}
+        self.writes = 0   # to cnc_share_files
         self.next_id = 1
 
     def upload(self, name, text):
@@ -42,6 +44,24 @@ class FakeServer:
 
     def execute(self, sql, params):
         rows = list(self.programs.values())
+        sql = sql.strip()
+        if "cnc_share_files" in sql:
+            result = []
+            if sql.startswith("SELECT name, folder, sha256"):
+                result = [{"name": n, **r} for n, r in self.share.items() if r["deleting"]]
+            elif sql.startswith("SELECT"):
+                result = [{"name": n, **r} for n, r in self.share.items()]
+            elif sql.startswith("INSERT"):
+                _, name, folder, size, sha, _ = params
+                self.share[name] = {"folder": folder, "size": size, "sha256": sha, "deleting": False}
+                self.writes += 1
+            elif sql.startswith("DELETE"):
+                for name in params[1]:
+                    del self.share[name]
+                self.writes += 1
+            else:
+                self.share[params[1]]["deleting"] = False
+            return type("Cursor", (), {"fetchall": lambda self: result})()
         if sql.startswith("SELECT path"):
             result = [{"path": f} for f in self.folders]
         elif sql.startswith("SELECT id, name"):
@@ -145,6 +165,49 @@ server.folders |= {"Move B", "Move B/Inner"}
 sync.sync(server)
 check("a moved folder ends up in its new place only", "OX" in read("Move B/Inner/x.nc") and "Move A" not in files()
       and server.programs["Move B/Inner/x.nc"]["synced"])
+
+
+def listed():
+    return sorted(n + ("/" if r["folder"] else "") for n, r in server.share.items())
+
+
+def delete(name):
+    server.share[name]["deleting"] = True
+
+
+check("lists what the control saved and the folders it made", listed() == ["HAAS1.nc", "Job 2/", "Job 2/HAAS2.nc", "Job 3"])
+open(os.path.join(folder, "O8888.nc"), "a").write("(edited on the control)\n")
+sync.sync(server)
+check("and an upload it edited", "O8888.nc" in listed() and server.share["O8888.nc"]["size"] == os.path.getsize(os.path.join(folder, "O8888.nc")))
+writes = server.writes
+sync.sync(server)
+check("writes nothing when nothing changed", server.writes == writes)
+
+del server.programs["O8888.nc"]
+delete("O8888.nc")
+sync.sync(server)
+check("an edited upload deleted on the dashboard goes", "O8888.nc" not in files() and "O8888.nc" not in listed())
+
+delete("Job 2/HAAS2.nc")
+delete("Job 2")
+sync.sync(server)
+check("a folder of the control's goes with its file", "Job 2" not in files() and "Job 2/" not in listed())
+
+delete("Job 3")
+open(os.path.join(folder, "Job 3"), "a").write("saved again\n")
+sync.sync(server)
+check("a file saved again after the delete stays", "Job 3" in files() and not server.share["Job 3"]["deleting"])
+
+os.makedirs(os.path.join(folder, "Saved"))
+sync.sync(server)
+open(os.path.join(folder, "Saved", "HAAS3.nc"), "w").write("saved on the control\n")
+delete("Saved")
+sync.sync(server)
+check("a folder saved into after the delete stays", "Saved" in files() and not server.share["Saved"]["deleting"])
+
+os.remove(os.path.join(folder, "Job 3"))
+sync.sync(server)
+check("one removed at the control drops off the list", "Job 3" not in listed())
 
 print("all passed" if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)

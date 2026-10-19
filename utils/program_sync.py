@@ -5,6 +5,9 @@ here too, even empty ones, and one deleted there goes here unless the control sa
 The dashboard's list wins for the files it put there: a new upload replaces the file, and a deleted one goes. Files the
 control saved there itself are left alone, and so is one of ours it edited, until the dashboard has a new version.
 PROGRAM_MANIFEST remembers which files are ours and what we wrote.
+
+Those other files and folders go in cnc_share_files, so the dashboard can list them. One deleted there goes here too,
+unless the control saved it again since.
 """
 import hashlib
 import json
@@ -46,6 +49,7 @@ class ProgramSync:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="programs", daemon=True)
         self._failed = set()   # names already logged as not writable
+        self._shas = {}        # path: (mtime_ns, size, sha256), so an unchanged file isn't read every round
 
     def start(self):
         self._thread.start()
@@ -84,6 +88,76 @@ class ProgramSync:
         if name not in self._failed:
             logger.warning(f"[PROGRAMS] Cannot write {name}: {e}")
             self._failed.add(name)
+
+    def _sha(self, path, st):
+        known = self._shas.get(path)
+        if known and known[:2] == (st.st_mtime_ns, st.st_size):
+            return known[2]
+        sha = file_sha(path)
+        self._shas[path] = (st.st_mtime_ns, st.st_size, sha)
+        return sha
+
+    def _delete_requested(self, conn):
+        """What was deleted on the dashboard. Files first, then the deepest folders."""
+        rows = conn.execute("SELECT name, folder, sha256 FROM cnc_share_files WHERE machine_id = %s AND delete_requested_at IS NOT NULL",
+                            (self.machine_id,)).fetchall()
+        for r in sorted(rows, key=lambda r: (r["folder"], -r["name"].count("/"))):
+            name = r["name"]
+            path = os.path.join(self.folder, *name.split("/"))
+            try:
+                if not allowed(name):
+                    raise OSError("not a name the dashboard gives")
+                if r["folder"]:
+                    os.rmdir(path)
+                elif file_sha(path) == r["sha256"]:
+                    os.remove(path)
+                else:
+                    raise OSError("it was saved again")
+                logger.info(f"[PROGRAMS] Deleted {name} from the control's files.")
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.info(f"[PROGRAMS] Left {name}: {e}")
+                conn.execute("UPDATE cnc_share_files SET delete_requested_at = NULL WHERE machine_id = %s AND name = %s",
+                             (self.machine_id, name))
+
+    def _report(self, conn, known):
+        """Lists in cnc_share_files each file and folder here the dashboard doesn't have as it is. `known` maps our
+        files to what we wrote, and our folders to None."""
+        found = {}
+        for root, dirs, names in os.walk(self.folder):
+            rel = os.path.relpath(root, self.folder)
+            prefix = "" if rel == "." else rel.replace(os.sep, "/") + "/"
+            dirs[:] = [d for d in dirs if not d.startswith(".") and not os.path.islink(os.path.join(root, d))]
+            for d in dirs:
+                if prefix + d not in known:
+                    found[prefix + d] = (True, None, None, None)
+            for n in names:
+                path = os.path.join(root, n)
+                if n.startswith(".") or os.path.islink(path):
+                    continue
+                try:
+                    st = os.stat(path)
+                    sha = self._sha(path, st)
+                except OSError:
+                    continue
+                if sha and known.get(prefix + n) != sha:
+                    found[prefix + n] = (False, st.st_size, sha, st.st_mtime)
+        listed = {r["name"]: (r["folder"], r["size"], r["sha256"]) for r in conn.execute(
+            "SELECT name, folder, size, sha256 FROM cnc_share_files WHERE machine_id = %s", (self.machine_id,)).fetchall()}
+        for name, (folder, size, sha, mtime) in found.items():
+            if listed.get(name) == (folder, size, sha):
+                continue
+            conn.execute("""
+                INSERT INTO cnc_share_files (machine_id, name, folder, size, sha256, modified_at)
+                VALUES (%s, %s, %s, %s, %s, to_timestamp(%s))
+                ON CONFLICT (machine_id, name) DO UPDATE SET folder = EXCLUDED.folder, size = EXCLUDED.size,
+                    sha256 = EXCLUDED.sha256, modified_at = EXCLUDED.modified_at, delete_requested_at = NULL""",
+                (self.machine_id, name, folder, size, sha, mtime))
+        gone = [n for n in listed if n not in found]
+        if gone:
+            conn.execute("DELETE FROM cnc_share_files WHERE machine_id = %s AND name = ANY(%s)", (self.machine_id, gone))
+        self._shas = {p: v for p, v in self._shas.items() if os.path.exists(p)}
 
     def sync(self, conn):
         made = self._load_folders()
@@ -143,6 +217,7 @@ class ProgramSync:
                 logger.info(f"[PROGRAMS] Left {name}. It was deleted on the dashboard but changed here.")
             del ours[name]
             self._save(ours)
+        self._delete_requested(conn)
         for path in sorted(made - set(folders), key=lambda p: -p.count("/")):   # the ones inside first
             try:
                 os.rmdir(os.path.join(self.folder, *path.split("/")))
@@ -153,6 +228,8 @@ class ProgramSync:
                 logger.info(f"[PROGRAMS] Left folder {path}. It was deleted on the dashboard but has files saved here.")
             made.discard(path)
             self._save_folders(made)
+        above = {"/".join(n.split("/")[:i]) for n in ours for i in range(1, n.count("/") + 1)}
+        self._report(conn, {**dict.fromkeys(above | set(folders)), **ours})
 
     def _run(self):
         conn = None
