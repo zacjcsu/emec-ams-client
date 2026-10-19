@@ -52,6 +52,7 @@ def load_machine_data_config():
     return dict(data) if isinstance(data, dict) else None
 
 MACHINE_DATA = load_machine_data_config()
+PROGRAM_SERIAL = (MACHINE_DATA or {}).get("control") == "haas-classic"   # programs go over the reader's port
 
 
 def load_program_folder():

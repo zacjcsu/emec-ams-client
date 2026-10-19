@@ -6,7 +6,7 @@ import time
 import psycopg
 from db.server_sync import UTC_NOW, get_server_connection
 from utils.timeutil import set_server_time
-from config.constants import (CONTACTOR_SWITCH, HEARTBEAT_PUSH_SECONDS, PROGRAM_FOLDER, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS,
+from config.constants import (CONTACTOR_SWITCH, HEARTBEAT_PUSH_SECONDS, PROGRAM_FOLDER, PROGRAM_SERIAL, RESTART_MAX_AGE_SECONDS, RESTART_POLL_SECONDS,
                               UPDATE_AFTER_SESSION)
 
 logger = logging.getLogger("heartbeat")
@@ -30,6 +30,7 @@ class HeartbeatMonitor:
     * contactor switch: set machine.contactor_switch from the config once. The dashboard only shows the
       spindle and checks for contactor faults when it's on.
     * program folder: set machine.program_share once. The dashboard only takes programs for a machine with one.
+    * program sending: set machine.program_serial once, for a control that takes programs over its RS-232 port.
     """
 
     def __init__(self, machine_id, screen=None, events=None):
@@ -89,6 +90,14 @@ class HeartbeatMonitor:
                     except Exception as e:
                         if PROGRAM_FOLDER:
                             logger.warning(f"[HEARTBEAT] Cannot report the program folder: {e}")
+                    try:
+                        conn.execute("UPDATE machine SET program_serial = %s WHERE machine_id = %s",
+                                     (PROGRAM_SERIAL, self.machine_id))
+                    except psycopg.OperationalError:
+                        raise
+                    except Exception as e:
+                        if PROGRAM_SERIAL:
+                            logger.warning(f"[HEARTBEAT] Cannot report program sending: {e}")
                     self._switch_reported = True    # once, even if the server is too old to take it
 
                 row = conn.execute(

@@ -14,6 +14,7 @@ from utils.idle_display import IdleDisplay
 from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
 from utils.program_sync import ProgramSync
+from utils.program_send import ProgramSender
 from utils.power_monitor import PowerMonitor
 from utils.haas_mdc import HaasMonitor
 from utils.live_state import LiveState
@@ -86,6 +87,7 @@ def make_machine_data():
 
 machine_data = make_machine_data()
 live = LiveState(MACHINE_ID, machine_data) if machine_data else None
+sender = ProgramSender(MACHINE_ID, machine_data) if machine_data and machine_data.can_send else None
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
 
@@ -152,6 +154,8 @@ def main():
     if machine_data:
         machine_data.start()
         live.start()
+    if sender:
+        sender.start()
     if programs:
         programs.start()
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD

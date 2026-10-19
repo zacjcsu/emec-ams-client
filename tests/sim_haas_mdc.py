@@ -157,12 +157,16 @@ mon._thread.join(10)
 
 
 class FakeClassic:
-    """The same answers on a pseudo-terminal. `off` stops it answering, like a machine switched off."""
+    """The same answers on a pseudo-terminal. `off` stops it answering, like a machine switched off.
+    `recv` is RECV: it answers nothing and stores what comes from the first % to the next in `received`."""
 
     def __init__(self):
         self.master, self.slave = os.openpty()   # holding the slave open keeps the master readable
         self.device = os.ttyname(self.slave)
         self.off = threading.Event()
+        self.recv = threading.Event()
+        self.received = None
+        self.pause_after = None   # in RECV, send XOFF after this many bytes and XON a second later
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
@@ -170,6 +174,18 @@ class FakeClassic:
         while True:
             select.select([self.master], [], [])
             buf += os.read(self.master, 1024)
+            if self.recv.is_set():
+                if self.pause_after is not None and len(buf) >= self.pause_after:
+                    self.pause_after = None
+                    os.write(self.master, b"\x13")
+                    threading.Timer(1, lambda: os.write(self.master, b"\x11")).start()
+                lines = buf.split(b"\r\n")
+                marks = [i for i, line in enumerate(lines) if line.strip() == b"%"]
+                if len(marks) >= 2:
+                    self.received = b"\r\n".join(lines[marks[0]:marks[1] + 1]) + b"\r\n"
+                    buf = b""
+                    self.recv.clear()
+                continue
             while b"\r\n" in buf:
                 line, buf = buf.split(b"\r\n", 1)
                 if self.off.is_set():
@@ -211,6 +227,45 @@ classic.off.set()
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
 classic.off.clear()
 check("classic: reconnects", wait_for(lambda: log().count("connected to") >= 2 and mon.connected, 20))
+
+check("haas_text adds the % lines and CR LF", haas_mdc.haas_text(b"O1 (A)\nM30\n\n") == b"%\r\nO1 (A)\r\nM30\r\n%\r\n")
+check("haas_text keeps a program's own % lines", haas_mdc.haas_text(b"%\r\nO1\r\n%\r\n") == b"%\r\nO1\r\n%\r\n")
+
+haas_mdc.SEND_RETRY_SECONDS = 0.2
+program = haas_mdc.haas_text(b"%\nO09990 (SIM)\n" + b"".join(b"(LINE %04d PADDING)\n" % n for n in range(300)) + b"M30\n%\n")
+claims = []
+STATE["Q104"] = "MODE, MEM"
+check("send: back on MEM", wait_for(lambda: mon.mode == "MODE, MEM"))
+job = haas_mdc.SendJob(1, program, lambda: claims.append(1) or True)
+mon.send(job)
+check("send: waits for RECV while the mill answers", wait_for(lambda: job.detail == "Press RECV"))
+classic.off.set()
+check("send: silence off the program list isn't RECV", wait_for(lambda: job.detail == "Mill off", 20) and not claims)
+classic.off.clear()
+check("send: reconnects", wait_for(lambda: mon.connected, 20))
+STATE["Q104"] = "MODE, LISTPROG"
+check("send: sees the program list", wait_for(lambda: "LISTPROG" in (mon.mode or "")))
+classic.pause_after = 2000
+classic.recv.set()
+check("send: sent after RECV", wait_for(lambda: job.done.is_set(), 40) and job.state == "sent")
+check("send: claimed once", claims == [1])
+check("send: the control got the program whole", classic.received == program)
+check("send: reconnects after", wait_for(lambda: mon.connected, 20))
+
+job = haas_mdc.SendJob(2, program, lambda: False)
+mon.send(job)
+classic.recv.set()
+check("send: a cancelled claim isn't sent", wait_for(lambda: job.done.is_set(), 40) and job.state == "cancelled")
+classic.recv.clear()
+check("send: reconnects after a cancel", wait_for(lambda: mon.connected, 20))
+
+job = haas_mdc.SendJob(3, program, lambda: True)
+mon.send(job)
+classic.recv.set()
+classic.off.set()   # stays silent after the send, like a mill switched off
+check("send: no answer after is a failure", wait_for(lambda: job.done.is_set(), 60) and job.state == "failed")
+classic.recv.clear()
+classic.off.clear()
 mon.stop()
 
 print("all passed" if not fails else f"{fails} failed")

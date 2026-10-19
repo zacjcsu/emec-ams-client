@@ -13,6 +13,11 @@ Set it up in config.json:
     "machine_data": {"control": "haas-classic", "device": "/dev/serial/by-id/usb-FTDI_...", "baud": 9600}
 The classic reader also takes "parity" ("none", "even" or "odd"), "data_bits" and "stop_bits", which must match
 Settings 12, 37 and 13. It always uses XON/XOFF, Setting 14.
+
+The classic reader also sends programs from the dashboard (utils/program_send.py) on the same port. The control
+can't say it's waiting in RECV, because in RECV it answers nothing. So a program goes when the control falls silent
+soon after it showed the list of programs, which is where RECV is pressed. It counts as sent once the control
+answers again after the closing %.
 """
 import logging
 import os
@@ -63,6 +68,13 @@ SNAPSHOT_SECONDS = 300
 RETRY_SECONDS = 10
 ANSWER_SECONDS = 3     # longest wait for an answer
 QUIET_SECONDS = 0.3    # without a line end or prompt, an answer is complete after this long with no more bytes
+SEND_WAIT_SECONDS = 600     # how long a program waits for RECV
+RECV_SECONDS = 1800         # silence this soon after the list of programs counts as RECV
+SEND_RETRY_SECONDS = 2
+SEND_CHUNK = 256            # written and drained at a time, so a pause from the control is obeyed within this
+SEND_STALL_SECONDS = 60     # longest pause the control may ask for
+AFTER_SEND_SECONDS = 20     # for the control to answer again after the closing %
+XON, XOFF = 0x11, 0x13
 
 
 def clean(raw):
@@ -70,6 +82,34 @@ def clean(raw):
     text = raw.decode("latin-1")
     text = re.sub(r"[\x00-\x1f]", " ", text)
     return text.strip().strip(">").strip()
+
+
+def haas_text(content):
+    """A program as the control takes it: CR LF line ends, between lines of %. It ignores anything before the first %
+    and stops at the next."""
+    lines = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if not lines or lines[0].strip() != b"%":
+        lines.insert(0, b"%")
+    if len(lines) == 1 or lines[-1].strip() != b"%":
+        lines.append(b"%")
+    return b"\r\n".join(lines) + b"\r\n"
+
+
+class SendJob:
+    """A program for the control. `claim()` is True if it may go now, False if it was cancelled, and raises if
+    that can't be told. The monitor moves state from "waiting" to "sending" and then "sent", "failed" or
+    "cancelled", with a detail for the dashboard and the bytes sent so far."""
+
+    def __init__(self, job_id, data, claim):
+        self.id, self.data, self.claim = job_id, data, claim
+        self.state, self.detail, self.sent = "waiting", None, 0
+        self.created = time.monotonic()
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
 
 
 class HaasClient:
@@ -192,6 +232,42 @@ class SerialClient(HaasClient):
             select.select([], [self.fd], [], ANSWER_SECONDS)
             data = data[os.write(self.fd, data):]
 
+    def send_program(self, data, progress):
+        """Writes a program while the control is in RECV, pausing when it sends XOFF. Raises OSError if it fails."""
+        attrs = termios.tcgetattr(self.fd)
+        own = list(attrs)
+        own[0] &= ~(termios.IXON | termios.IXOFF)   # read XOFF here, so a pause that never ends can time out
+        try:
+            termios.tcsetattr(self.fd, termios.TCSANOW, own)
+            sent, paused_at = 0, None
+            while sent < len(data):
+                while select.select([self.fd], [], [], 0)[0]:
+                    chunk = os.read(self.fd, 4096)
+                    if not chunk:
+                        raise ConnectionError("the serial adapter went away")
+                    for b in chunk:
+                        if b == XOFF:
+                            paused_at = paused_at or time.monotonic()
+                        elif b == XON:
+                            paused_at = None
+                if paused_at:
+                    if time.monotonic() - paused_at > SEND_STALL_SECONDS:
+                        raise TimeoutError("the mill paused the send and didn't resume")
+                    time.sleep(0.01)
+                    continue
+                if not select.select([], [self.fd], [], ANSWER_SECONDS)[1]:
+                    raise TimeoutError("the serial adapter stopped taking data")
+                sent += os.write(self.fd, data[sent:sent + SEND_CHUNK])
+                termios.tcdrain(self.fd)
+                progress(sent)
+        except termios.error as e:   # not an OSError
+            raise OSError(*e.args) from e
+        finally:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
+            except termios.error:
+                pass
+
 
 def data_log(path="logs/machine_data.log"):
     """Its own file, kept as long as sync.log, and kept out of sync.log and the dashboard's events."""
@@ -221,6 +297,8 @@ class HaasMonitor:
         self.log = log or data_log()
         self.values = {}
         self.mtc = {}
+        self.mode, self.mode_at = None, 0.0   # the last Q104 answer and when
+        self.job = None
         self.connected = False
         self._failing = False
         self._stop = threading.Event()
@@ -235,11 +313,75 @@ class HaasMonitor:
         return cls(SerialClient(device, baud, parity, data_bits, stop_bits), FAST, DISCOVER_CLASSIC, False,
                    poll_seconds, log)
 
+    @property
+    def can_send(self):
+        return hasattr(self.client, "send_program")
+
     def start(self):
         self._thread.start()
 
     def stop(self):
         self._stop.set()
+
+    def send(self, job):
+        """Sends `job` once the control is in RECV. One at a time."""
+        if not self.can_send:
+            raise ValueError("this control takes no programs")
+        if self.job:
+            raise ValueError("a program is already waiting")
+        self.job = job
+
+    def _finish(self, job, state, detail=None):
+        job.state, job.detail = state, detail
+        logger.info(f"[HAAS] Program {job.id}: {state}" + (f", {detail}." if detail else "."))
+        self.log.info(f"program {job.id} {state}" + (f": {detail}" if detail else ""))
+        self.job = None
+        job.done.set()
+
+    def _send_round(self, job):
+        """Moves a waiting program along. True if it used the port this round."""
+        if job.cancelled.is_set():
+            self._finish(job, "cancelled")
+            return False
+        if time.monotonic() - job.created > SEND_WAIT_SECONDS:
+            self._finish(job, "failed", "RECV wasn't pressed")
+            return False
+        if self.connected:
+            job.detail = "Press RECV"
+            return False
+        if not (self.mode and "LISTPROG" in self.mode and time.monotonic() - self.mode_at < RECV_SECONDS):
+            job.detail = "Mill off"
+            return False
+        try:
+            self.client.connect()
+            if clean(self.client.ask("Q100")):
+                return False   # still answering, so the normal round reconnects
+            try:
+                if not job.claim():
+                    self._finish(job, "cancelled")
+                    return True
+            except Exception as e:
+                logger.info(f"[HAAS] Cannot start program {job.id}: {e}")
+                self._stop.wait(SEND_RETRY_SECONDS)
+                return True
+            job.state, job.detail = "sending", None
+            logger.info(f"[HAAS] Sending program {job.id}, {len(job.data)} bytes.")
+            self.log.info(f"sending program {job.id}, {len(job.data)} bytes")
+            self.client.send_program(job.data, lambda n: setattr(job, "sent", n))
+            deadline = time.monotonic() + AFTER_SEND_SECONDS
+            while time.monotonic() < deadline:
+                if clean(self.client.ask("Q100")):
+                    self._finish(job, "sent")
+                    return True
+            self._finish(job, "failed", "No answer after the send")
+        except OSError as e:
+            if job.state == "sending":
+                self._finish(job, "failed", f"Stopped: {e}")
+            else:
+                job.detail = "Mill off"
+                self.client.close()
+                self._stop.wait(SEND_RETRY_SECONDS)
+        return True
 
     def _poll(self, command, always=False):
         raw = self.client.ask(command)
@@ -247,6 +389,8 @@ class HaasMonitor:
         if always or self.values.get(command) != value:
             self.log.info(f"{command} = {value!r}  raw={raw!r}" + ("  (snapshot)" if always else ""))
         self.values[command] = value
+        if command == "Q104" and value:
+            self.mode, self.mode_at = value, time.monotonic()
         return value
 
     def _poll_all(self, commands, always=False):
@@ -321,6 +465,9 @@ class HaasMonitor:
         # Connection changes go to sync.log at INFO: the control is off most nights, which isn't worth a warning.
         snapshot_at = 0.0
         while not self._stop.is_set():
+            job = self.job
+            if job and self._send_round(job):
+                continue
             try:
                 if not self.connected:
                     self.client.connect()
@@ -350,4 +497,4 @@ class HaasMonitor:
                 self.connected, self._failing = False, True
                 self.values, self.mtc = {}, {}
                 self.client.close()
-                self._stop.wait(RETRY_SECONDS)
+                self._stop.wait(SEND_RETRY_SECONDS if self.job else RETRY_SECONDS)
