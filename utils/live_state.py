@@ -22,8 +22,8 @@ STATES = {"IDLE": "Idle", "FEED HOLD": "Feed hold", "ALARM ON": "Alarm"}
 
 
 def _after(value, prefix):
-    """'USING TOOL, 9' -> '9' for prefix 'USING TOOL'."""
-    m = re.fullmatch(re.escape(prefix) + r",\s*(.*)", value or "")
+    """'USING TOOL, 9' -> '9' for prefix 'USING TOOL'. A '>' left over from the answer before is skipped."""
+    m = re.fullmatch(re.escape(prefix) + r",\s*(.*)", (value or "").lstrip("> "))
     return m and m.group(1).strip()
 
 
@@ -36,7 +36,9 @@ def _number(text):
 
 
 def _macro(values, var):
-    return _number(_after(values.get(f"Q600 {var}"), "MACRO"))
+    # A classic control names the variable: "MACRO, 3027,       0.000000".
+    text = _after(values.get(f"Q600 {var}"), "MACRO")
+    return _number(text and text.rsplit(",", 1)[-1].strip())
 
 
 def _seconds(text):
@@ -52,9 +54,10 @@ def _flag(n):
 def snapshot(values, mtc):
     """The control's current values by name, leaving out the ones it didn't give. `values` and `mtc` are
     HaasMonitor's."""
-    q500 = values.get("Q500", "")
-    m = re.fullmatch(r"PROGRAM, (.*?), (.*?), PARTS, (\d+)", q500)
-    if q500.startswith("STATUS BUSY"):
+    # A classic control with Setting 41 off leaves out the spaces: "PROGRAM,O05005,IDLE,PARTS,13567".
+    q500 = values.get("Q500", "").lstrip("> ")
+    m = re.fullmatch(r"PROGRAM,\s*(.*?),\s*(.*?),\s*PARTS,\s*(\d+)", q500)
+    if re.match(r"STATUS,?\s*BUSY", q500):
         state = "Running"
     elif m:
         state = STATES.get(m.group(2), m.group(2).capitalize())
