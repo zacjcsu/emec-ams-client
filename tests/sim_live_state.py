@@ -3,10 +3,11 @@
     .venv/bin/python tests/sim_live_state.py
 """
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import utils.live_state  # noqa: E402
 from utils.live_state import LiveState, snapshot  # noqa: E402
 
 fails = 0
@@ -79,6 +80,8 @@ class Conn:
         self.sql.append((sql.split()[2], args))
 
 
+clock = [datetime.now(timezone.utc)]
+utils.live_state.utc_now = lambda: clock[0]
 mon = Monitor()
 live = LiveState("tm-test", mon)
 conn = Conn()
@@ -94,11 +97,12 @@ check("running keeps the program and parts", conn.sql[0][1][2].obj.get("program"
 check("state change sent", conn.sql[-1][0] == "machine_run_state" and conn.sql[-1][1][2] == "Running")
 conn.sql.clear()
 mon.values = dict(running, **{"Q600 3027": "MACRO, 0.0"})
+clock[0] += timedelta(seconds=2)
 live.write(conn)
 check("spindle stopped a moment is still running", conn.sql[0][1][2].obj.get("state") == "Running"
       and conn.sql[-1][0] == "machine_live")
-live._still_at -= timedelta(seconds=61)
 stopped_at = live._still_at
+clock[0] += timedelta(seconds=61)
 conn.sql.clear()
 live.write(conn)
 check("spindle stopped a minute is stopped", conn.sql[0][1][2].obj.get("state") == "Stopped")
@@ -107,6 +111,14 @@ conn.sql.clear()
 mon.values = running
 live.write(conn)
 check("spindle on again is running", conn.sql[-1][1][2] == "Running" and live._still_at is None)
+conn.sql.clear()
+started = LiveState("tm-test", Monitor())
+started.monitor.values = dict(running, **{"Q600 3027": "MACRO, 0.0"})
+started.write(conn)
+clock[0] += timedelta(seconds=61)
+started.write(conn)
+runs = [a for s, a in conn.sql if s == "machine_run_state"]
+check("stopped at start comes after running", [r[2] for r in runs] == ["Running", "Stopped"] and runs[0][1] < runs[1][1])
 conn.sql.clear()
 mon.connected, mon.values = False, {}
 live.write(conn)

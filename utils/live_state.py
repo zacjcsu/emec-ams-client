@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from collections import deque
+from datetime import timedelta
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -119,6 +120,7 @@ class LiveState:
         self._thread = threading.Thread(target=self._run, name="live", daemon=True)
         self._runs = deque(maxlen=500)   # run state changes not yet written
         self._state = None
+        self._state_at = None
         self._alarm = None
         self._kept = {}                  # program and parts, which Q500 leaves out while running
         self._still_at = None            # when the spindle stopped while running
@@ -152,8 +154,12 @@ class LiveState:
             self._still_at = None
         state = data.get("state", "Off" if not connected else None)
         if state and state != self._state:
-            self._state = state
-            self._runs.append((self._still_at if state == "Stopped" else now, state))
+            at = now
+            if state == "Stopped":
+                # After Running, which has the same time when the spindle was already stopped
+                at = max(self._still_at, self._state_at + timedelta(milliseconds=1))
+            self._state, self._state_at = state, at
+            self._runs.append((at, state))
         alarm = data.get("alarm")
         if alarm != self._alarm:
             self._alarm = alarm
