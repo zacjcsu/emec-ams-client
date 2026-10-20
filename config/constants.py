@@ -79,6 +79,17 @@ def load_fitted():
     return data.get("screen", True) is not False, data.get("reader", True) is not False
 
 SCREEN_FITTED, READER_FITTED = load_fitted()
+
+
+def load_camera():
+    """Whether to look for a USB camera, from "camera" in config.json. On unless set to false."""
+    try:
+        with open("config/config.json", "r") as f:
+            return json.load(f).get("camera", True) is not False
+    except Exception:
+        return True
+
+CAMERA = load_camera()
 PROGRAM_MANIFEST = "data/programs.json"
 PROGRAM_POLL_SECONDS = 5
 

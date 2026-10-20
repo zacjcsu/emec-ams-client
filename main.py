@@ -15,6 +15,7 @@ from utils.lockout import LockoutMonitor
 from utils.heartbeat import HeartbeatMonitor
 from utils.program_sync import ProgramSync
 from utils.program_send import ProgramSender
+from utils.camera import Camera
 from utils.power_monitor import PowerMonitor
 from utils.haas_mdc import HaasMonitor
 from utils.live_state import LiveState
@@ -23,7 +24,7 @@ import time
 import signal
 import sys
 from db.local_db import LocalDB
-from config.constants import (CARD_POLL_INTERVAL, CONTACTOR_SWITCH, LCD_MESSAGES, MACHINE_DATA, MACHINE_ID,
+from config.constants import (CAMERA, CARD_POLL_INTERVAL, CONTACTOR_SWITCH, LCD_MESSAGES, MACHINE_DATA, MACHINE_ID,
                               PROGRAM_FOLDER, READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE, STATUS_OFFLINE,
                               UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
@@ -70,6 +71,7 @@ heartbeat = HeartbeatMonitor(MACHINE_ID, screen=lcd, events=events)
 idle = IdleDisplay(lcd, db, lockout)
 activity = CardActivity(MACHINE_ID)
 programs = ProgramSync(MACHINE_ID) if PROGRAM_FOLDER else None
+camera = Camera(MACHINE_ID) if CAMERA else None
 CONTROLS = {"haas-ngc": HaasMonitor.ngc, "haas-classic": HaasMonitor.classic,   # "control" in machine_data
             "yaskawa-v1000": V1000Monitor}
 
@@ -167,6 +169,8 @@ def main():
         sender.start()
     if programs:
         programs.start()
+    if camera:
+        camera.start()
     skip_startup = False   # set after a session ended by a disabled user, to keep their message on the LCD
     while True:
         try:
