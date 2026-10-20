@@ -3,6 +3,7 @@
     .venv/bin/python tests/sim_live_state.py
 """
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -91,6 +92,21 @@ live.write(conn)
 check("running keeps the program and parts", conn.sql[0][1][2].obj.get("program") == "O00100"
       and conn.sql[0][1][2].obj.get("parts") == 7789)
 check("state change sent", conn.sql[-1][0] == "machine_run_state" and conn.sql[-1][1][2] == "Running")
+conn.sql.clear()
+mon.values = dict(running, **{"Q600 3027": "MACRO, 0.0"})
+live.write(conn)
+check("spindle stopped a moment is still running", conn.sql[0][1][2].obj.get("state") == "Running"
+      and conn.sql[-1][0] == "machine_live")
+live._still_at -= timedelta(seconds=61)
+stopped_at = live._still_at
+conn.sql.clear()
+live.write(conn)
+check("spindle stopped a minute is stopped", conn.sql[0][1][2].obj.get("state") == "Stopped")
+check("stopped from when the spindle stopped", conn.sql[-1][1][1:] == (stopped_at, "Stopped"))
+conn.sql.clear()
+mon.values = running
+live.write(conn)
+check("spindle on again is running", conn.sql[-1][1][2] == "Running" and live._still_at is None)
 conn.sql.clear()
 mon.connected, mon.values = False, {}
 live.write(conn)

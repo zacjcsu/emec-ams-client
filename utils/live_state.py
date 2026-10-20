@@ -18,6 +18,8 @@ from utils.timeutil import utc_now
 logger = logging.getLogger("haas")
 
 REFRESH_SECONDS = 30   # written at least this often, so the dashboard can tell the Pi is still there
+# A control stopped at M00 or M01 still says busy. The spindle stops there, and in a tool change for a few seconds.
+STOPPED_AFTER_SECONDS = 60
 STATES = {"IDLE": "Idle", "FEED HOLD": "Feed hold", "ALARM ON": "Alarm"}
 
 
@@ -119,6 +121,7 @@ class LiveState:
         self._state = None
         self._alarm = None
         self._kept = {}                  # program and parts, which Q500 leaves out while running
+        self._still_at = None            # when the spindle stopped while running
         self._written = None             # (connected, data) last written
         self._written_at = 0.0
 
@@ -140,10 +143,17 @@ class LiveState:
                     data[key] = self._kept[key]
         else:
             self._kept = {}
+        now = utc_now()
+        if data.get("state") == "Running" and data.get("rpm") == 0:
+            self._still_at = self._still_at or now
+            if (now - self._still_at).total_seconds() >= STOPPED_AFTER_SECONDS:
+                data["state"] = "Stopped"
+        else:
+            self._still_at = None
         state = data.get("state", "Off" if not connected else None)
         if state and state != self._state:
             self._state = state
-            self._runs.append((utc_now(), state))
+            self._runs.append((self._still_at if state == "Stopped" else now, state))
         alarm = data.get("alarm")
         if alarm != self._alarm:
             self._alarm = alarm
