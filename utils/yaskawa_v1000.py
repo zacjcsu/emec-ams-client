@@ -122,7 +122,7 @@ class V1000Monitor:
             "output Hz": f"{r[4] / 100:.1f}",
             "voltage V": f"{r[5] / 10:.0f}",
             "current A": f"{r[6] / 100:.1f}",   # 0.01 A on 2A0001 to 2A0040, 0.1 A on larger drives
-            "power": str(r[7]),
+            "power": str(r[7] - 0x10000 if r[7] & 0x8000 else r[7]),   # negative while braking
             "inputs": " ".join(f"S{i + 1}" for i in range(7) if r[11] >> i & 1) or "none",
         }
 
