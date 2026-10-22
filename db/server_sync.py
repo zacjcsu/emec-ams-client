@@ -371,8 +371,15 @@ def report_power_on(machine_id, at, relay_on, conn=None):
                                          (machine_id, at, bool(relay_on))))
 
 
-def report_power_off(machine_id, at, conn=None):
-    _with_conn(conn, lambda c: c.execute("SELECT report_power_off(%s::text, %s::timestamptz)", (machine_id, at)))
+def report_power_off(machine_id, at, drive=None, conn=None):
+    """`drive` is RunTotals.summary() from utils/yaskawa_v1000.py. Sending it needs dashboard migration 099."""
+    if drive is None:
+        _with_conn(conn, lambda c: c.execute("SELECT report_power_off(%s::text, %s::timestamptz)", (machine_id, at)))
+        return
+    _with_conn(conn, lambda c: c.execute(
+        "SELECT report_power_off(%s::text, %s::timestamptz, %s::real, %s::real, %s::real, %s::real, %s::real, %s::real)",
+        (machine_id, at, drive["reverse_seconds"], drive["avg_hz"], drive["max_hz"], drive["avg_kw"], drive["max_kw"],
+         drive["kwh"])))
 
 
 def report_card_removed(machine_id, conn=None):

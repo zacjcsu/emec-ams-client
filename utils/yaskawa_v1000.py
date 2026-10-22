@@ -5,7 +5,8 @@ address H5-01 = 1F, 9600 baud (H5-02 = 3), no parity (H5-03 = 0). Set H5-05 to 0
 the Pi stops asking. Registers and codes are from the V1000 Technical Manual (SIEP C710606 18F), Appendix C.
 
 `running` is what utils/power_monitor.py records as the spindle being on. A drive that stops answering counts as off,
-which is also what a drive without power looks like.
+which is also what a drive without power looks like. `run_summary` is what the drive reported over the last run, sent
+with its end (dashboard migration 099).
 
 Set it up in config.json:
     "machine_data": {"control": "yaskawa-v1000", "device": "/dev/serial/by-id/usb-FTDI_...", "address": 31}
@@ -22,6 +23,7 @@ logger = logging.getLogger("vfd")
 ANSWER_SECONDS = 0.5
 RETRY_SECONDS = 10
 MISSES = 3   # rounds without an answer before the drive counts as gone
+MAX_GAP_SECONDS = 5   # longest gap between readings counted toward a run
 
 # Table C.4, the fault codes in U2-01 (0080H) and U2-02 (0081H)
 FAULTS = {
@@ -57,6 +59,28 @@ def crc16(data):
 
 def code(table, value):
     return "none" if value == 0 else table.get(value, f"{value:04X}H")
+
+
+class RunTotals:
+    """What the drive reported over one spindle run, added up from its readings."""
+
+    def __init__(self):
+        self.seconds = self.reverse = self.hz_seconds = self.kw_seconds = self.max_hz = 0.0
+        self.max_kw = None
+
+    def add(self, seconds, reverse, hz, kw):
+        self.seconds += seconds
+        self.reverse += seconds if reverse else 0.0
+        self.hz_seconds += hz * seconds
+        self.kw_seconds += kw * seconds
+        self.max_hz = max(self.max_hz, hz)
+        self.max_kw = kw if self.max_kw is None else max(self.max_kw, kw)
+
+    def summary(self):
+        if not self.seconds:
+            return None
+        return {"reverse_seconds": self.reverse, "avg_hz": self.hz_seconds / self.seconds, "max_hz": self.max_hz,
+                "avg_kw": self.kw_seconds / self.seconds, "max_kw": self.max_kw, "kwh": self.kw_seconds / 3600}
 
 
 class ModbusPort:
@@ -98,6 +122,10 @@ class V1000Monitor:
         self.values = {}
         self.connected = False
         self.running = False
+        self.run = None   # RunTotals of the current or last run
+        self._in_run = False
+        self._sample = None
+        self._sampled_at = None
         self._failing = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="vfd", daemon=True)
@@ -108,10 +136,16 @@ class V1000Monitor:
     def stop(self):
         self._stop.set()
 
+    def run_summary(self):
+        return self.run.summary() if self.run else None
+
     def _fast(self):
         r = self.port.read(0x0020, 13)          # 0020H to 002CH
         alarm, fault = self.port.read(0x007F, 2)
         status = r[0]
+        power = r[7] - 0x10000 if r[7] & 0x8000 else r[7]   # negative while braking
+        # 0.01 kW, from 0.13 kW at idle on Mill A. The manual doesn't say.
+        self._sample = (bool(status & 1), bool(status & 2), r[4] / 100, power / 100)
         return {
             "run": "on" if status & 1 else "off",
             "direction": "reverse" if status & 2 else "forward",
@@ -122,7 +156,7 @@ class V1000Monitor:
             "output Hz": f"{r[4] / 100:.1f}",
             "voltage V": f"{r[5] / 10:.0f}",
             "current A": f"{r[6] / 100:.1f}",   # 0.01 A on 2A0001 to 2A0040, 0.1 A on larger drives
-            "power": str(r[7] - 0x10000 if r[7] & 0x8000 else r[7]),   # negative while braking
+            "power": str(power),
             "inputs": " ".join(f"S{i + 1}" for i in range(7) if r[11] >> i & 1) or "none",
         }
 
@@ -146,6 +180,17 @@ class V1000Monitor:
             self.values[name] = value
         self.running = self.values.get("run") == "on"
 
+    def _add_to_run(self):
+        now = time.monotonic()
+        running, reverse, hz, kw = self._sample
+        if running:
+            if not self._in_run:
+                self.run = RunTotals()
+            if self._sampled_at is not None:
+                self.run.add(min(now - self._sampled_at, MAX_GAP_SECONDS), reverse, hz, kw)
+        self._in_run = running
+        self._sampled_at = now
+
     def _run(self):
         # Connection changes go to sync.log at INFO: a drive whose power the relay cuts is off whenever nobody's on.
         snapshot_at, misses = 0.0, 0
@@ -154,6 +199,7 @@ class V1000Monitor:
                 if self.port.client.fd is None:
                     self.port.client.connect()
                 values = self._fast()
+                self._add_to_run()
                 if not self.connected:
                     self.connected, self._failing = True, False
                     logger.info(f"[VFD] Connected to {self.port.name}.")
@@ -178,6 +224,7 @@ class V1000Monitor:
                 elif not self._failing:
                     logger.info(f"[VFD] Cannot reach {self.port.name}: {e}.")
                 self.connected, self._failing, self.running = False, True, False
+                self._in_run, self._sampled_at = False, None
                 self.values = {}
                 # A drive without power keeps being asked, so it's seen as soon as it's back. A missing adapter is
                 # opened again later.

@@ -93,7 +93,7 @@ sender = ProgramSender(MACHINE_ID, haas) if haas and haas.can_send else None
 if CONTACTOR_SWITCH:
     power = PowerMonitor(MACHINE_ID, relay)
 elif isinstance(machine_data, V1000Monitor):
-    power = PowerMonitor(MACHINE_ID, relay, read=lambda: machine_data.running)
+    power = PowerMonitor(MACHINE_ID, relay, read=lambda: machine_data.running, summary=machine_data.run_summary)
 else:
     power = None
 flow = ScanFlow(reader, db, lcd, activity)

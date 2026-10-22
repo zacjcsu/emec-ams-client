@@ -15,6 +15,7 @@ logger = logging.getLogger("power")
 class PowerMonitor:
     """Records when the machine is on. By default it watches normally closed microswitches on the machine's contactors.
     With `read`, it records what that returns instead, such as whether the drive is running (utils/yaskawa_v1000.py).
+    `summary` gives what the drive reported over the run, sent with its end.
 
     The switches are wired in series between CONTACTOR_PIN and ground, with the internal pull-up. They are closed
     while the contactors are out, so the pin reads low when the machine is off. A pulled-in contactor or a broken wire reads
@@ -28,10 +29,11 @@ class PowerMonitor:
     At start the current state is reported once, which closes a row left open while the app was down.
     """
 
-    def __init__(self, machine_id, relay, read=None):
+    def __init__(self, machine_id, relay, read=None, summary=None):
         self.machine_id = machine_id
         self.relay = relay
-        self._queue = deque(maxlen=1000)   # (on, at, relay_on)
+        self._summary = summary
+        self._queue = deque(maxlen=1000)   # (on, at, relay_on, drive summary at off)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="power", daemon=True)
         if read:
@@ -61,7 +63,8 @@ class PowerMonitor:
             elif seen != state and time.monotonic() - since >= CONTACTOR_SETTLE_SECONDS:
                 state = seen
                 logger.info(f"[POWER] Machine {'on' if state else 'off'} (relay {'on' if self.relay.is_on else 'off'})")
-                self._queue.append((state, utc_now(), self.relay.is_on))
+                drive = self._summary() if self._summary and not state else None
+                self._queue.append((state, utc_now(), self.relay.is_on, drive))
             if self._queue and time.monotonic() >= retry_at:
                 try:
                     self._send()
@@ -78,10 +81,10 @@ class PowerMonitor:
     def _send(self):
         with get_server_connection(timeout=3) as conn:
             while self._queue:
-                on, at, relay_on = self._queue[0]
+                on, at, relay_on, drive = self._queue[0]
                 if on:
                     report_power_on(self.machine_id, at, relay_on, conn=conn)
                 else:
-                    report_power_off(self.machine_id, at, conn=conn)
+                    report_power_off(self.machine_id, at, drive, conn=conn)
                 conn.commit()
                 self._queue.popleft()

@@ -128,11 +128,35 @@ check("seen as soon as it answers again", wait_for(lambda: mon.connected and mon
 
 # The power monitor records the drive's run state the way it records a contactor switch.
 power_monitor.PowerMonitor._send = lambda self: (_ for _ in ()).throw(OSError("no server here"))
-pm = power_monitor.PowerMonitor("zz_test", type("Relay", (), {"is_on": True})(), read=lambda: mon.running)
+pm = power_monitor.PowerMonitor("zz_test", type("Relay", (), {"is_on": True})(), read=lambda: mon.running,
+                                summary=mon.run_summary)
 pm.start()
 check("power monitor sees the spindle on", wait_for(lambda: [q[0] for q in pm._queue] == [True]))
 REGS.update({0x20: 0x0004})
 check("and off", wait_for(lambda: [q[0] for q in pm._queue] == [True, False]))
+
+# A run of about 1 s forward at 30 Hz and 0.5 kW, then 1 s in reverse at 60 Hz and 1.5 kW.
+REGS.update({0x20: 0x0005, 0x24: 3000, 0x27: 50})
+check("on again", wait_for(lambda: [q[0] for q in pm._queue] == [True, False, True]))
+time.sleep(1)
+REGS.update({0x20: 0x0007, 0x24: 6000, 0x27: 150})
+time.sleep(1)
+REGS.update({0x20: 0x0004, 0x24: 0, 0x27: 0})
+check("off with the run's totals", wait_for(lambda: len(pm._queue) == 4 and pm._queue[3][3]))
+run = pm._queue[3][3]
+check("the on has none", pm._queue[2][3] is None)
+check("reverse time", 0.7 < run["reverse_seconds"] < 1.5)
+check("speed", 35 < run["avg_hz"] < 55 and run["max_hz"] == 60)
+check("power", 0.7 < run["avg_kw"] < 1.3 and run["max_kw"] == 1.5)
+check("energy", abs(run["kwh"] - run["avg_kw"] * (run["reverse_seconds"] + 1) / 3600) < 0.0003)
+
+REGS.update({0x20: 0x0005, 0x24: 3000, 0x27: 0xFFF2})
+check("a new run", wait_for(lambda: len(pm._queue) == 5))
+time.sleep(0.5)
+REGS.update({0x20: 0x0004})
+check("starts its totals afresh", wait_for(lambda: len(pm._queue) == 6 and pm._queue[5][3]
+                                           and pm._queue[5][3]["reverse_seconds"] == 0
+                                           and pm._queue[5][3]["max_kw"] == -0.14))
 pm.stop()
 mon.stop()
 
