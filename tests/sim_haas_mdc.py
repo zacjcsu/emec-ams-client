@@ -258,6 +258,11 @@ check("classic: polls the door switch and coolant pump",
 from utils import live_state  # noqa: E402
 snap = live_state.snapshot(mon.values, {})
 check("classic: door open and coolant off on the dashboard", snap.get("door_open") is True and snap.get("coolant") is False)
+check("classic: polls the feed word and work position", "Q600 4109" in mon.values and "Q600 5043" in mon.values)
+STATE["Q600 2004"] = "MACRO, 2004,      -5.123400"
+check("classic: reads the tool offsets a few at a time",
+      wait_for(lambda: mon.values.get("Q600 2004") == STATE["Q600 2004"], 20)
+      and "Q600 5920 = 'MACRO, 5920, INVALID'  raw=b'\\x02MACRO, 5920, INVALID\\x17'  (snapshot)" in log())
 classic.off.set()
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
 classic.off.clear()

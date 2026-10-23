@@ -34,8 +34,12 @@ from logging.handlers import TimedRotatingFileHandler
 logger = logging.getLogger("haas")
 
 # Polled every poll_seconds: program, state and parts; mode; tool in the spindle; spindle RPM and load;
-# motion type (#4001 is 0 for G00, 1 to 3 for feed moves).
-FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001")
+# motion type (#4001 is 0 for G00, 1 to 3 for feed moves); the last F, S, T, N, Q and R words; the G90/G91, G43/G49,
+# canned cycle and work offset groups (#4009 is 80 with no canned cycle); and the work position X, Y and Z.
+FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001",
+        "Q600 4109", "Q600 4119", "Q600 4120", "Q600 4114", "Q600 4117", "Q600 4118",
+        "Q600 4003", "Q600 4008", "Q600 4009", "Q600 4012",
+        "Q600 5041", "Q600 5042", "Q600 5043")
 # The NGC adds coolant pump, right door and left door. The door inputs are the TM-1P's.
 FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
 # The classic adds its door switch and coolant pump.
@@ -57,10 +61,23 @@ SLOW = (
     "Q600 3022",   # feed timer
     "Q600 3026",   # tool in spindle
     "Q600 3030",   # single block
+    "Q600 3011",   # control's date
+    "Q600 3012",   # control's time
+    "Q600 3023",   # this part's time
+    "Q600 3024",   # last part's time
+    "Q600 3025",   # previous part's time
 )
+# Per tool, as the mill manual numbers them: length offset and wear, diameter offset and wear, feed time, total time,
+# tool life limit and count, and the highest load seen and its limit. A lathe uses #2001-#2800 for other offsets.
+# A few are read each round, logged when they change, and all of them again every TOOLS_SNAPSHOT_SECONDS.
+TOOLS = tuple(f"Q600 {base + tool}" for base in (2000, 2200, 2400, 2600, 5400, 5500, 5600, 5700, 5800, 5900)
+              for tool in range(1, 21))
+TOOLS_PER_ROUND = 8
+TOOLS_SNAPSHOT_SECONDS = 3600
 # Asked once per connect, to see what answers. Unknown commands get "UNKNOWN".
 _Q = tuple(f"Q{n}" for n in (*range(100, 106), *range(200, 204), *range(300, 306), *range(400, 404), 500, 501))
-_VARS = (*range(3000, 3036), 3901, 3902, *range(4001, 4022), *range(5021, 5027), *range(5041, 5047), 1094, 1098)
+_VARS = (*range(3000, 3036), 3901, 3902, *range(4001, 4022), *range(4101, 4127), *range(5021, 5027),
+         *range(5041, 5047), 1094, 1098)
 DISCOVER_NGC = _Q + tuple(f"Q600 {n}" for n in (*_VARS, 13013))
 # Classic I/O: #1000-1063 discrete inputs, #1080-1097 analog inputs, #1100-1155 discrete outputs.
 DISCOVER_CLASSIC = _Q + tuple(f"Q600 {n}" for n in (*_VARS, *range(1000, 1064), *range(1080, 1098),
@@ -69,6 +86,7 @@ MTCONNECT_PORT = 8082
 SNAPSHOT_SECONDS = 300
 RETRY_SECONDS = 10
 ANSWER_SECONDS = 3     # longest wait for an answer
+OFF_AFTER_SILENT = 3   # unanswered commands at the start of a round that mean the control is off
 QUIET_SECONDS = 0.3    # without a line end or prompt, an answer is complete after this long with no more bytes
 SEND_WAIT_SECONDS = 600     # how long a program waits for RECV
 RECV_SECONDS = 1800         # silence this soon after the list of programs counts as RECV
@@ -336,6 +354,9 @@ class HaasMonitor:
         self.job = None
         self.connected = False
         self._failing = False
+        self._tools = []              # (command, logged even if unchanged) still to read in this pass
+        self._tools_snapshot_at = 0.0
+        self._silent = set()          # tool commands the control didn't answer since connecting
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="haas", daemon=True)
 
@@ -432,8 +453,27 @@ class HaasMonitor:
 
     def _poll_all(self, commands, always=False):
         # A serial port stays open with the machine off, so silence is how a classic control shows it's gone.
-        if not any([self._poll(command, always) for command in commands]):
+        # Each unanswered command waits ANSWER_SECONDS, so the first few going unanswered is enough.
+        answered = False
+        for i, command in enumerate(commands, 1):
+            answered = bool(self._poll(command, always)) or answered
+            if not answered and i >= OFF_AFTER_SILENT:
+                break
+        if not answered:
             raise ConnectionError("no answer")
+
+    def _poll_tools(self):
+        # An unanswered command costs ANSWER_SECONDS, so the round stops at the first one, and it isn't asked again.
+        if not self._tools:
+            always = time.monotonic() >= self._tools_snapshot_at
+            if always:
+                self._tools_snapshot_at = time.monotonic() + TOOLS_SNAPSHOT_SECONDS
+            self._tools = [(command, always) for command in TOOLS if command not in self._silent]
+        batch, self._tools = self._tools[:TOOLS_PER_ROUND], self._tools[TOOLS_PER_ROUND:]
+        for command, always in batch:
+            if not self._poll(command, always):
+                self._silent.add(command)
+                break
 
     def _discover(self):
         for command in self.discover:
@@ -517,11 +557,13 @@ class HaasMonitor:
                     self._discover()
                     self._mtc_next = None
                     snapshot_at = 0.0
+                    self._tools, self._tools_snapshot_at, self._silent = [], 0.0, set()
                 if time.monotonic() >= snapshot_at:
                     self._poll_all(self.fast + SLOW, always=True)
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS
                 else:
                     self._poll_all(self.fast)
+                self._poll_tools()
                 if self.mtconnect:
                     self._mtconnect_changes()
                 self._stop.wait(self.poll_seconds)
