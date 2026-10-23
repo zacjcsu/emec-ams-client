@@ -19,11 +19,13 @@ can't say it's waiting in RECV, because in RECV it answers nothing. So a program
 soon after it showed the list of programs, which is where RECV is pressed. It counts as sent once the control
 answers again after the closing %.
 """
+import fcntl
 import logging
 import os
 import re
 import select
 import socket
+import struct
 import termios
 import threading
 import time
@@ -42,8 +44,11 @@ FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001",
         "Q600 5041", "Q600 5042", "Q600 5043")
 # The NGC adds coolant pump, right door and left door. The door inputs are the TM-1P's.
 FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
-# The classic adds its door switch and coolant pump.
-FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105")
+# The classic adds its door switch, coolant pump, e-stop, over voltage, low air, low lube and regen overheat inputs,
+# and the powered servos output. The lathe's #1100 is its hydraulic pump. Names are from the 2007 electrical service
+# manual, pages 31 to 33.
+FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105", "Q600 1007", "Q600 1010", "Q600 1011", "Q600 1012", "Q600 1013",
+                       "Q600 1100")
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
     "Q100",        # serial number
@@ -67,13 +72,21 @@ SLOW = (
     "Q600 3024",   # last part's time
     "Q600 3025",   # previous part's time
 )
-# Per tool, as the mill manual numbers them: length offset and wear, diameter offset and wear, feed time, total time,
-# tool life limit and count, and the highest load seen and its limit. A lathe uses #2001-#2800 for other offsets.
-# A few are read each round, logged when they change, and all of them again every TOOLS_SNAPSHOT_SECONDS.
-TOOLS = tuple(f"Q600 {base + tool}" for base in (2000, 2200, 2400, 2600, 5400, 5500, 5600, 5700, 5800, 5900)
-              for tool in range(1, 21))
-TOOLS_PER_ROUND = 8
-TOOLS_SNAPSHOT_SECONDS = 3600
+# Read a few each round, logged when they change, and all of them again every TABLES_SNAPSHOT_SECONDS:
+# per tool, feed time, total time, tool life limit and count, and the highest load seen and its limit;
+# the G52 and G54-G59 work offsets; the highest X, Y, Z, A and B axis load seen; and per tool, the offsets.
+# A mill's are length and wear, then diameter and wear. A lathe's are X, Z, nose radius and tip geometry, then
+# X, Z and radius wear.
+_TOOL_DATA = (5400, 5500, 5600, 5700, 5800, 5900)
+_TABLES = ((5201, 5202, 5203, *(b + i for b in range(5221, 5322, 20) for i in range(3)), *range(1064, 1069)))
+TABLES_MILL = tuple(f"Q600 {n}" for n in (*_TABLES, *(base + tool for base in (2000, 2200, 2400, 2600, *_TOOL_DATA)
+                                                       for tool in range(1, 21))))
+TABLES_LATHE = tuple(f"Q600 {n}" for n in (*_TABLES, *(base + tool for base in (2000, 2100, 2200, 2300, 2700, 2800,
+                                                                                2900, *_TOOL_DATA)
+                                                        for tool in range(1, 21))))
+LATHE_MODEL = re.compile(r"MODEL,\s*(TL|SL|ST|DS|GT|OL)")
+TABLES_PER_ROUND = 8
+TABLES_SNAPSHOT_SECONDS = 3600
 # Asked once per connect, to see what answers. Unknown commands get "UNKNOWN".
 _Q = tuple(f"Q{n}" for n in (*range(100, 106), *range(200, 204), *range(300, 306), *range(400, 404), 500, 501))
 _VARS = (*range(3000, 3036), 3901, 3902, *range(4001, 4022), *range(4101, 4127), *range(5021, 5027),
@@ -95,6 +108,7 @@ SEND_CHUNK = 256            # written and drained at a time, so a pause from the
 SEND_STALL_SECONDS = 60     # longest pause the control may ask for
 AFTER_SEND_SECONDS = 20     # for the control to answer again after the closing %
 XON, XOFF = 0x11, 0x13
+ASYNC_LOW_LATENCY = 0x2000
 
 
 def clean(raw):
@@ -263,6 +277,14 @@ class SerialClient(HaasClient):
         except termios.error as e:   # not an OSError
             self.close()
             raise OSError(*e.args) from e
+        # An FTDI adapter holds what it receives for its latency timer, 16 ms by default. Low latency makes it 1 ms.
+        # That took a classic's answers from 16 to 13 ms on TM-3P and 32 to 24 ms on TM-2P (2026-10-23).
+        try:
+            serial = bytearray(fcntl.ioctl(self.fd, termios.TIOCGSERIAL, bytes(128)))
+            struct.pack_into("i", serial, 16, struct.unpack_from("i", serial, 16)[0] | ASYNC_LOW_LATENCY)
+            fcntl.ioctl(self.fd, termios.TIOCSSERIAL, bytes(serial))
+        except OSError:
+            pass   # not every adapter or pty takes it
 
     def close(self):
         if self.fd is not None:
@@ -354,9 +376,10 @@ class HaasMonitor:
         self.job = None
         self.connected = False
         self._failing = False
-        self._tools = []              # (command, logged even if unchanged) still to read in this pass
-        self._tools_snapshot_at = 0.0
-        self._silent = set()          # tool commands the control didn't answer since connecting
+        self.tables = TABLES_MILL
+        self._tables = []             # (command, logged even if unchanged) still to read in this pass
+        self._tables_snapshot_at = 0.0
+        self._silent = set()          # table commands the control didn't answer since connecting
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="haas", daemon=True)
 
@@ -462,14 +485,14 @@ class HaasMonitor:
         if not answered:
             raise ConnectionError("no answer")
 
-    def _poll_tools(self):
+    def _poll_tables(self):
         # An unanswered command costs ANSWER_SECONDS, so the round stops at the first one, and it isn't asked again.
-        if not self._tools:
-            always = time.monotonic() >= self._tools_snapshot_at
+        if not self._tables:
+            always = time.monotonic() >= self._tables_snapshot_at
             if always:
-                self._tools_snapshot_at = time.monotonic() + TOOLS_SNAPSHOT_SECONDS
-            self._tools = [(command, always) for command in TOOLS if command not in self._silent]
-        batch, self._tools = self._tools[:TOOLS_PER_ROUND], self._tools[TOOLS_PER_ROUND:]
+                self._tables_snapshot_at = time.monotonic() + TABLES_SNAPSHOT_SECONDS
+            self._tables = [(command, always) for command in self.tables if command not in self._silent]
+        batch, self._tables = self._tables[:TABLES_PER_ROUND], self._tables[TABLES_PER_ROUND:]
         for command, always in batch:
             if not self._poll(command, always):
                 self._silent.add(command)
@@ -557,13 +580,15 @@ class HaasMonitor:
                     self._discover()
                     self._mtc_next = None
                     snapshot_at = 0.0
-                    self._tools, self._tools_snapshot_at, self._silent = [], 0.0, set()
+                    self._tables, self._tables_snapshot_at, self._silent = [], 0.0, set()
+                    lathe = LATHE_MODEL.match(clean(self.client.ask("Q102")))
+                    self.tables = TABLES_LATHE if lathe else TABLES_MILL
                 if time.monotonic() >= snapshot_at:
                     self._poll_all(self.fast + SLOW, always=True)
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS
                 else:
                     self._poll_all(self.fast)
-                self._poll_tools()
+                self._poll_tables()
                 if self.mtconnect:
                     self._mtconnect_changes()
                 self._stop.wait(self.poll_seconds)

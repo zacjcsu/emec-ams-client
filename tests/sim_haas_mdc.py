@@ -263,6 +263,9 @@ STATE["Q600 2004"] = "MACRO, 2004,      -5.123400"
 check("classic: reads the tool offsets a few at a time",
       wait_for(lambda: mon.values.get("Q600 2004") == STATE["Q600 2004"], 20)
       and "Q600 5920 = 'MACRO, 5920, INVALID'  raw=b'\\x02MACRO, 5920, INVALID\\x17'  (snapshot)" in log())
+check("classic: a lathe gets the lathe's offsets", haas_mdc.LATHE_MODEL.match("MODEL, TL1")
+      and haas_mdc.LATHE_MODEL.match("MODEL,ST10") and not haas_mdc.LATHE_MODEL.match("MODEL, TM3P")
+      and mon.tables is haas_mdc.TABLES_MILL)
 classic.off.set()
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
 classic.off.clear()
