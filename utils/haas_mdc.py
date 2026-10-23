@@ -72,18 +72,28 @@ SLOW = (
     "Q600 3024",   # last part's time
     "Q600 3025",   # previous part's time
 )
-# Read a few each round, logged when they change, and all of them again every TABLES_SNAPSHOT_SECONDS:
-# per tool, feed time, total time, tool life limit and count, and the highest load seen and its limit;
-# the G52 and G54-G59 work offsets; the highest X, Y, Z, A and B axis load seen; and per tool, the offsets.
-# A mill's are length and wear, then diameter and wear. A lathe's are X, Z, nose radius and tip geometry, then
-# X, Z and radius wear.
-_TOOL_DATA = (5400, 5500, 5600, 5700, 5800, 5900)
-_TABLES = ((5201, 5202, 5203, *(b + i for b in range(5221, 5322, 20) for i in range(3)), *range(1064, 1069)))
-TABLES_MILL = tuple(f"Q600 {n}" for n in (*_TABLES, *(base + tool for base in (2000, 2200, 2400, 2600, *_TOOL_DATA)
-                                                       for tool in range(1, 21))))
-TABLES_LATHE = tuple(f"Q600 {n}" for n in (*_TABLES, *(base + tool for base in (2000, 2100, 2200, 2300, 2700, 2800,
-                                                                                2900, *_TOOL_DATA)
-                                                        for tool in range(1, 21))))
+# Read a few each round, logged when they change, and all of them again every TABLES_SNAPSHOT_SECONDS. First the
+# G52 and G54-G59 work offsets, the highest X, Y, Z, A and B axis load seen, and tools 1 to 20. Then the other tools,
+# the common variables #100-#199 and #500-#699, the block end, machine and skip positions, the length offset in
+# effect, G110 and G111, and #8550-#8564, which only TM-2P answers.
+# Per tool: feed time, total time, tool life limit and count, the highest load seen and its limit, and the offsets.
+# A mill's are length and wear, then diameter and wear, for 200 tools. A lathe's are X, Z, nose radius and tip
+# geometry, then X, Z and radius wear, for 50.
+_TOOL_DATA = (5400, 5500, 5600, 5700, 5800, 5900)   # tools 1 to 99, since #5700 isn't tool 100's life limit
+_FIRST = (*(b + i for b in range(5201, 5322, 20) for i in range(6)), *range(1064, 1069))
+_REST = (*range(100, 200), *range(500, 700), *range(5001, 5007), *range(5021, 5027), *range(5061, 5067),
+         *range(5081, 5087), *range(7001, 7007), *range(7021, 7027), *range(8550, 8565))
+
+
+def _tables(offsets, tools):
+    first = [base + tool for base in (*offsets, *_TOOL_DATA) for tool in range(1, 21)]
+    rest = [base + tool for base in offsets for tool in range(21, tools + 1)]
+    rest += [base + tool for base in _TOOL_DATA for tool in range(21, min(tools, 99) + 1)]
+    return tuple(f"Q600 {n}" for n in (*_FIRST, *first, *rest, *_REST))
+
+
+TABLES_MILL = _tables((2000, 2200, 2400, 2600), 200)
+TABLES_LATHE = _tables((2000, 2100, 2200, 2300, 2700, 2800, 2900), 50)
 LATHE_MODEL = re.compile(r"MODEL,\s*(TL|SL|ST|DS|GT|OL)")
 TABLES_PER_ROUND = 8
 TABLES_SNAPSHOT_SECONDS = 3600
