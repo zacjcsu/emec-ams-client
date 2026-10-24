@@ -131,6 +131,7 @@ def snapshot(values, mtc, lathe=False, now=None):
         "f_word": _macro(values, 4109),
         "s_word": _macro(values, 4119),
         "next_tool": _macro(values, 4120),
+        "h_word": _macro(values, 4111),
         "block": _macro(values, 4114),
         "q_word": _macro(values, 4117),
         "r_word": _macro(values, 4118),

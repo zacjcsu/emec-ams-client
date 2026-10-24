@@ -36,10 +36,10 @@ from logging.handlers import TimedRotatingFileHandler
 logger = logging.getLogger("haas")
 
 # Polled every poll_seconds: program, state and parts; mode; tool in the spindle; spindle RPM and load;
-# motion type (#4001 is 0 for G00, 1 to 3 for feed moves); the last F, S, T, N, Q and R words; the G90/G91, G43/G49,
+# motion type (#4001 is 0 for G00, 1 to 3 for feed moves); the last F, S, T, N, Q, R and H words; the G90/G91, G43/G49,
 # canned cycle and work offset groups (#4009 is 80 with no canned cycle); and the work position X, Y and Z.
 FAST = ("Q500", "Q104", "Q201", "Q600 3027", "Q600 1098", "Q600 4001",
-        "Q600 4109", "Q600 4119", "Q600 4120", "Q600 4114", "Q600 4117", "Q600 4118",
+        "Q600 4109", "Q600 4119", "Q600 4120", "Q600 4114", "Q600 4117", "Q600 4118", "Q600 4111",
         "Q600 4003", "Q600 4008", "Q600 4009", "Q600 4012",
         "Q600 5041", "Q600 5042", "Q600 5043")
 # The NGC adds coolant pump, right door and left door. The door inputs are the TM-1P's.
@@ -68,15 +68,16 @@ SLOW = (
 )
 # Read a few each round, logged when they change, and all of them again every TABLES_SNAPSHOT_SECONDS. First the
 # G52 and G54-G59 work offsets, the highest X, Y, Z, A and B axis load seen, and tools 1 to 20. Then the other tools,
-# the common variables #100-#199 and #500-#699, the block end, machine and skip positions, the length offset in
-# effect, and G110 and G111.
+# the common variables #100-#199 and #500-#699, the block end, machine and skip positions, and G110 and G111.
+# Not the length offset in effect, #5081-#5086. The TM-1P closes the connection on #5084 during a run. The dashboard
+# works it out from the H word and the tool table.
 # Per tool: feed time, tool life count and the offsets. The dashboard shows each day's change in the first two.
 # A mill's are length and wear, then diameter and wear, for 200 tools. A lathe's are X, Z, nose radius and tip
 # geometry, then X, Z and radius wear, for 50.
 _TOOL_DATA = (5400, 5700)   # tools 1 to 99
 _FIRST = (*(b + i for b in range(5201, 5322, 20) for i in range(6)), *range(1064, 1069))
 _REST = (*range(100, 200), *range(500, 700), *range(5001, 5007), *range(5021, 5027), *range(5061, 5067),
-         *range(5081, 5087), *range(7001, 7007), *range(7021, 7027))
+         *range(7001, 7007), *range(7021, 7027))
 
 
 def _tables(offsets, tools):
