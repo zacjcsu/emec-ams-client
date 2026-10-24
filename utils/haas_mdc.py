@@ -13,6 +13,8 @@ Set it up in config.json:
     "machine_data": {"control": "haas-classic", "device": "/dev/serial/by-id/usb-FTDI_...", "baud": 9600}
 The classic reader also takes "parity" ("none", "even" or "odd"), "data_bits" and "stop_bits", which must match
 Settings 12, 37 and 13. It always uses XON/XOFF, Setting 14.
+"position_seconds": 0.5 at the top of config.json reads the position and N word that often between rounds while a
+program runs, for the dashboard's G-code viewer. Without it they're read once a round.
 
 The classic reader also sends programs from the dashboard (utils/program_send.py) on the same port. The control
 can't say it's waiting in RECV, because in RECV it answers nothing. So a program goes when the control falls silent
@@ -49,6 +51,9 @@ FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
 # manual, pages 31 to 33.
 FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105", "Q600 1007", "Q600 1010", "Q600 1011", "Q600 1012", "Q600 1013",
                        "Q600 1100", "Q600 3023")   # and this part's time, since it has no MTConnect ThisCycle
+# Work X, Y and Z and the N word, read every position_seconds between rounds while a program runs
+POSITION = ("Q600 5041", "Q600 5042", "Q600 5043", "Q600 4114")
+RUNNING = re.compile(r"STATUS,?\s*BUSY")   # Q500 while a program runs, as utils/live_state.py reads it
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
     "Q100",        # serial number
@@ -366,7 +371,7 @@ class HaasMonitor:
     value of each MTConnect item. A condition's is (level, alarm number, text). Make one with HaasMonitor.ngc or
     HaasMonitor.classic."""
 
-    def __init__(self, client, fast, discover, mtconnect=False, poll_seconds=2, log=None):
+    def __init__(self, client, fast, discover, mtconnect=False, poll_seconds=2, log=None, position_seconds=None):
         self.client = client
         self.fast = fast
         self.discover = discover
@@ -374,6 +379,7 @@ class HaasMonitor:
         self._mtc_next = None      # the next MTConnect change to read, None to start from the current page
         self._mtc_failing = False
         self.poll_seconds = float(poll_seconds)
+        self.position_seconds = float(position_seconds) if position_seconds else None
         self.log = log or data_log()
         self.values = {}
         self.mtc = {}
@@ -389,13 +395,14 @@ class HaasMonitor:
         self._thread = threading.Thread(target=self._run, name="haas", daemon=True)
 
     @classmethod
-    def ngc(cls, host, port=5051, poll_seconds=2, log=None):
-        return cls(TcpClient(str(host), int(port)), FAST_NGC, DISCOVER_NGC, True, poll_seconds, log)
+    def ngc(cls, host, port=5051, poll_seconds=2, log=None, position_seconds=None):
+        return cls(TcpClient(str(host), int(port)), FAST_NGC, DISCOVER_NGC, True, poll_seconds, log, position_seconds)
 
     @classmethod
-    def classic(cls, device, baud=9600, parity="none", data_bits=8, stop_bits=1, poll_seconds=2, log=None):
+    def classic(cls, device, baud=9600, parity="none", data_bits=8, stop_bits=1, poll_seconds=2, log=None,
+                position_seconds=None):
         return cls(SerialClient(device, baud, parity, data_bits, stop_bits), FAST_CLASSIC, DISCOVER_CLASSIC, False,
-                   poll_seconds, log)
+                   poll_seconds, log, position_seconds)
 
     @property
     def can_send(self):
@@ -503,6 +510,18 @@ class HaasMonitor:
                 self._silent.add(command)
                 break
 
+    def _between_rounds(self):
+        """Waits poll_seconds, reading the position meanwhile while a program runs and position_seconds is set."""
+        end = time.monotonic() + self.poll_seconds
+        if self.position_seconds and RUNNING.match(self.values.get("Q500", "").lstrip("> ")):
+            next_at = time.monotonic() + self.position_seconds
+            while next_at < end and not self.job:
+                if self._stop.wait(max(0.0, next_at - time.monotonic())):
+                    return
+                self._poll_all(POSITION)
+                next_at = max(next_at + self.position_seconds, time.monotonic())
+        self._stop.wait(max(0.0, end - time.monotonic()))
+
     def _discover(self):
         for command in self.discover:
             raw = self.client.ask(command)
@@ -596,7 +615,7 @@ class HaasMonitor:
                 self._poll_tables()
                 if self.mtconnect:
                     self._mtconnect_changes()
-                self._stop.wait(self.poll_seconds)
+                self._between_rounds()
             except OSError as e:
                 if self.connected:
                     logger.info(f"[HAAS] Lost the control: {e}.")

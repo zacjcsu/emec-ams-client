@@ -310,6 +310,34 @@ check("send: no answer after is a failure", wait_for(lambda: job.done.is_set(), 
 classic.recv.clear()
 classic.off.clear()
 mon.stop()
+mon._thread.join(20)
+mon.client.close()
+
+mon = haas_mdc.HaasMonitor.classic(classic.device, poll_seconds=1.5, position_seconds=0.25)
+asked = []
+ask = mon.client.ask
+mon.client.ask = lambda command: asked.append(command) or ask(command)
+STATE["Q104"] = "MODE, MEM"
+STATE["Q500"] = "PROGRAM, O00100, IDLE, PARTS, 7"
+mon.start()
+check("position: connects", wait_for(lambda: mon.values.get("Q500") == STATE["Q500"], 20))
+
+
+def x_reads(seconds):
+    time.sleep(1.5)   # into the next round
+    n = asked.count("Q600 5041")
+    time.sleep(seconds)
+    return asked.count("Q600 5041") - n
+
+
+idle = x_reads(3)
+STATE["Q500"] = "STATUS BUSY"
+check("position: seen running", wait_for(lambda: mon.values.get("Q500") == "STATUS BUSY", 10))
+busy = x_reads(3)
+check(f"position: read once a round while idle ({idle} in 3 s)", idle <= 3)
+check(f"position: read every position_seconds while running ({busy} in 3 s)", busy >= 8)
+check("position: N word read with it", asked.count("Q600 4114") >= asked.count("Q600 5041") - 1)
+mon.stop()
 
 print("all passed" if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)

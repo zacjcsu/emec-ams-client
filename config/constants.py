@@ -47,10 +47,17 @@ def load_machine_data_config():
     settings."""
     try:
         with open("config/config.json", "r") as f:
-            data = json.load(f).get("machine_data")
+            config = json.load(f)
     except Exception:
         return None   # load_machine_config has already warned
-    return dict(data) if isinstance(data, dict) else None
+    data = config.get("machine_data")
+    if not isinstance(data, dict):
+        return None
+    data = dict(data)
+    # Kept outside machine_data, so code from before it ignores it
+    if config.get("position_seconds") and str(data.get("control", "")).startswith("haas"):
+        data["position_seconds"] = config["position_seconds"]
+    return data
 
 MACHINE_DATA = load_machine_data_config()
 PROGRAM_SERIAL = (MACHINE_DATA or {}).get("control") == "haas-classic"   # programs go over the reader's port
