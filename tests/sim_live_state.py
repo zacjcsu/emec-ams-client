@@ -64,12 +64,48 @@ check("NGC alarm name", d["state"] == "Alarm" and d["alarm"] == {"code": "1022",
 d = snapshot(dict(IDLE, **{"Q600 11067": "MACRO, 1.0"}), MTC)
 check("left door open", d["door_open"] is True)
 
+# TM-2P's answers in a G83 cycle on 2026-10-23, a classic control.
+PECK = dict(running, **{
+    "Q100": "S/N, 1105673", "Q101": "SOFTWARE, VER M18.14B",
+    "Q600 4109": "MACRO, 4109,      10.700000", "Q600 4119": "MACRO, 4119,    4600.000000",
+    "Q600 4120": "MACRO, 4120,       7.000000", "Q600 4114": "MACRO, 4114,     635.000000",
+    "Q600 4117": "MACRO, 4117,       0.100000", "Q600 4118": "MACRO, 4118,       0.200000",
+    "Q600 4003": "MACRO, 4003,      90.000000", "Q600 4008": "MACRO, 4008,      43.000000",
+    "Q600 4009": "MACRO, 4009,      83.000000", "Q600 4012": "MACRO, 4012,      54.000000",
+    "Q600 5041": "MACRO, 5041,      -2.425000", "Q600 5042": "MACRO, 5042,      -3.825000",
+    "Q600 5043": "MACRO, 5043,     -12.356700", "Q600 3022": "MACRO, 3022,  11685649.000000",
+    "Q600 3023": "MACRO, 3023,    1550.000000", "Q600 3011": "MACRO, 3011,  261023.000000",
+    "Q600 3012": "MACRO, 3012,  192810.000000",
+    "Q600 1007": "MACRO, 1007,       0.000000", "Q600 1010": "MACRO, 1010,       0.000000",
+    "Q600 1011": "MACRO, 1011,       0.000000", "Q600 1012": "MACRO, 1012,       0.000000",
+    "Q600 1013": "MACRO, 1013,       1.000000", "Q600 1100": "MACRO, 1100,       1.000000",
+})
+d = snapshot(PECK, {}, now=datetime(2026, 10, 23, 19, 28, 10))
+check("feed and speed words", d["f_word"] == 10.7 and d["s_word"] == 4600 and d["next_tool"] == 7)
+check("block and peck", d["block"] == 635 and d["q_word"] == 0.1 and d["r_word"] == 0.2)
+check("G-code groups", (d["g_distance"], d["g_length"], d["g_cycle"], d["g_offset"]) == (90, 43, 83, 54))
+check("mill position", d["position"] == {"x": -2.425, "y": -3.825, "z": -12.3567})
+check("part and feed timers", d["part_s"] == 1550 and d["feed_time_s"] == 11685649)
+check("clock right", d["clock_offset_s"] == 0)
+check("classic serial and software", d["serial"] == "1105673" and d["software"] == "M18.14B")
+check("classic with no faults", d["faults"] == [] and d["estop"] is False and d["servos"] is True)
+d = snapshot(PECK, {}, lathe=True)
+check("lathe position is X and Z", d["position"] == {"x": -2.425, "z": -3.825})
+d = snapshot(dict(PECK, **{"Q500": "PROGRAM,MDI,ALARM ON,PARTS,13568", "Q600 1007": "MACRO, 1007, 1.000000",
+                           "Q600 1100": "MACRO, 1100, 0.000000"}), {})
+check("classic e-stop names the alarm", d["estop"] is True and d["faults"] == ["estop"]
+      and d["alarm"] == {"code": "", "text": "E-stop"} and d["servos"] is False)
+d = snapshot(dict(PECK, **{"Q600 1011": "MACRO, 1011, 1.000000", "Q600 1013": "MACRO, 1013, 0.000000"}), {})
+check("low air and regen", d["faults"] == ["low_air", "regen"])
+check("NGC has no faults list", "faults" not in snapshot(IDLE, MTC))
+
 
 class Monitor:
     poll_seconds = 2
     connected = True
     values = IDLE
     mtc = {}
+    tables = ()
 
 
 class Conn:
@@ -78,6 +114,20 @@ class Conn:
 
     def execute(self, sql, args):
         self.sql.append((sql.split()[2], args))
+
+    def cursor(self):
+        conn = self
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def executemany(self, sql, rows):
+                conn.sql.append((sql.split()[2], list(rows)))
+        return Cursor()
 
 
 clock = [datetime.now(timezone.utc)]
@@ -123,5 +173,32 @@ conn.sql.clear()
 mon.connected, mon.values = False, {}
 live.write(conn)
 check("off", conn.sql[0][1][1] is False and conn.sql[-1][1][2] == "Off")
+
+tables = LiveState("tm-test", Monitor())
+tables.monitor.tables = ("Q600 2001", "Q600 2002", "Q600 5401")
+tables.monitor.values = dict(IDLE, **{"Q600 2001": "MACRO, 2001, -12.727000", "Q600 2002": "MACRO, 2002, -9.225800"})
+conn.sql.clear()
+tables.write(conn)
+sent = [a for s, a in conn.sql if s == "cnc_values"]
+check("table values sent", sent == [[("tm-test", 2001, -12.727), ("tm-test", 2002, -9.2258)]])
+conn.sql.clear()
+tables.write(conn)
+check("unchanged table values not sent again", not [a for s, a in conn.sql if s == "cnc_values"])
+tables.monitor.values = dict(tables.monitor.values, **{"Q600 2002": "MACRO, 2002, -9.754200"})
+tables.write(conn)
+check("a changed one is sent", [a for s, a in conn.sql if s == "cnc_values"] == [[("tm-test", 2002, -9.7542)]])
+
+faulty = LiveState("tm-test", Monitor())
+faulty.monitor.values = dict(PECK, **{"Q600 1011": "MACRO, 1011, 1.000000"})
+logged = []
+utils.live_state.logger.info = lambda msg, **kw: logged.append((msg, kw.get("extra", {}).get("code")))
+faulty.read()
+clock[0] += timedelta(seconds=2)
+faulty.read()
+check("a blink of low air isn't an event", not [m for m, c in logged if c == "cnc_input"])
+clock[0] += timedelta(seconds=4)
+faulty.read()
+faulty.read()
+check("low air held 5 s is one event", [m for m, c in logged if c == "cnc_input"] == ["[HAAS] Low air."])
 
 sys.exit(1 if fails else 0)

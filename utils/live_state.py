@@ -8,12 +8,13 @@ import re
 import threading
 import time
 from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from db.server_sync import get_server_connection
+from utils.haas_mdc import TABLES_LATHE
 from utils.timeutil import utc_now
 
 logger = logging.getLogger("haas")
@@ -22,6 +23,17 @@ REFRESH_SECONDS = 30   # written at least this often, so the dashboard can tell 
 # A control stopped at M00 or M01 still says busy. The spindle stops there, and in a tool change for a few seconds.
 STOPPED_AFTER_SECONDS = 60
 STATES = {"IDLE": "Idle", "FEED HOLD": "Feed hold", "ALARM ON": "Alarm"}
+# A classic's inputs, named from the 2007 electrical service manual, and the value that means trouble. Regen overheat
+# reads 1 on all three classics with no alarm, so it's taken as active at 0.
+CLASSIC_FAULTS = {"estop": (1007, 1), "low_air": (1011, 1), "low_lube": (1012, 1), "over_voltage": (1010, 1),
+                  "regen": (1013, 0)}
+FAULT_NAMES = {"estop": "E-stop", "low_air": "Low air", "low_lube": "Low lube", "over_voltage": "Over voltage",
+               "regen": "Regen overheat"}
+FAULT_EVENT_SECONDS = 5   # held this long, a fault goes to the machine's events. Low air blinks at some tool changes.
+# The hourly table values, each sent when it changes (dashboard migration 101).
+UPSERT_VALUE = """INSERT INTO cnc_values (machine_id, var, value) VALUES (%s, %s, %s)
+                  ON CONFLICT (machine_id, var) DO UPDATE SET value = EXCLUDED.value, at = now()
+                  WHERE cnc_values.value IS DISTINCT FROM EXCLUDED.value"""
 
 
 def _after(value, prefix):
@@ -54,9 +66,22 @@ def _flag(n):
     return None if n is None else n != 0
 
 
-def snapshot(values, mtc):
+def _clock_offset(values, now):
+    """Seconds the control's clock is ahead of the Pi's. #3011 is YYMMDD and #3012 HHMMSS."""
+    d, t = _macro(values, 3011), _macro(values, 3012)
+    if not d or t is None:
+        return None
+    d, t = int(d), int(t)
+    try:
+        control = datetime(2000 + d // 10000, d // 100 % 100, d % 100, t // 10000, t // 100 % 100, t % 100)
+    except ValueError:
+        return None
+    return round((control - now).total_seconds())
+
+
+def snapshot(values, mtc, lathe=False, now=None):
     """The control's current values by name, leaving out the ones it didn't give. `values` and `mtc` are
-    HaasMonitor's."""
+    HaasMonitor's. `now` is the Pi's local time, for the control's clock."""
     # A classic control with Setting 41 off leaves out the spaces: "PROGRAM,O05005,IDLE,PARTS,13567".
     q500 = values.get("Q500", "").lstrip("> ")
     m = re.fullmatch(r"PROGRAM,\s*(.*?),\s*(.*?),\s*PARTS,\s*(\d+)", q500)
@@ -76,9 +101,17 @@ def snapshot(values, mtc):
         if active and active != "NO ACTIVE ALARMS":
             text = text or active
         alarm = {"code": code, "text": text}
+    faults = [name for name, (var, bad) in CLASSIC_FAULTS.items() if _macro(values, var) == bad]
+    if alarm and not alarm["text"] and faults:
+        alarm["text"] = ", ".join(FAULT_NAMES[f] for f in faults)
     doors = [_macro(values, v) for v in (11066, 11067, 1008) if f"Q600 {v}" in values]   # 1008 on a classic
     motion = _macro(values, 4001)
     remaining = _number(mtc.get("CycleRemainingTime"))
+    classic = "Q600 1007" in values
+    estop = {"TRIGGERED": True, "ARMED": False}.get(mtc.get("EmergencyStop"))
+    position = {"x": _macro(values, 5041), "z": _macro(values, 5042)} if lathe else \
+        {"x": _macro(values, 5041), "y": _macro(values, 5042), "z": _macro(values, 5043)}
+    position = {k: v for k, v in position.items() if v is not None}
     data = {
         "state": state,
         "alarm": alarm,
@@ -91,8 +124,24 @@ def snapshot(values, mtc):
         "motion": None if motion is None else "Rapid" if motion == 0 else "Feed",
         "coolant": _flag(_macro(values, 12018 if "Q600 12018" in values else 1105)),
         "door_open": any(doors) if doors else None,
-        "estop": {"TRIGGERED": True, "ARMED": False}.get(mtc.get("EmergencyStop")),
+        "estop": "estop" in faults if classic else estop,
+        "faults": faults if classic else None,
+        "servos": _flag(_macro(values, 1100)),   # the lathe's hydraulic pump
         "single_block": _flag(_macro(values, 3030)),
+        "f_word": _macro(values, 4109),
+        "s_word": _macro(values, 4119),
+        "next_tool": _macro(values, 4120),
+        "block": _macro(values, 4114),
+        "q_word": _macro(values, 4117),
+        "r_word": _macro(values, 4118),
+        "g_distance": _macro(values, 4003),   # 90 or 91
+        "g_length": _macro(values, 4008),     # 43, 44 or 49
+        "g_cycle": _macro(values, 4009),      # 80 with no canned cycle
+        "g_offset": _macro(values, 4012),     # 54 to 59, or 154
+        "position": position or None,
+        "part_s": _macro(values, 3023),
+        "feed_time_s": _macro(values, 3022),
+        "clock_offset_s": _clock_offset(values, now or datetime.now()),
         "feed_override": _number(mtc.get("FeedrateOverride")),
         "rapid_override": _number(mtc.get("RapidOverride")),
         "spindle_override": _number(mtc.get("SpindleSpeedOverride")),
@@ -105,8 +154,10 @@ def snapshot(values, mtc):
         "tool_changes": _number(_after(values.get("Q200"), "TOOL CHANGES")),
         "power_on_s": _seconds(_after(values.get("Q300"), "P.O. TIME")),
         "cycle_start_s": _seconds(_after(values.get("Q301"), "C.S. TIME")),
-        "serial": _after(values.get("Q100"), "SERIAL NUMBER"),
-        "software": _after(values.get("Q101"), "SOFTWARE VERSION"),
+        # A classic answers "S/N, 1105673" and "SOFTWARE, VER M18.14B".
+        "serial": _after(values.get("Q100"), "SERIAL NUMBER") or _after(values.get("Q100"), "S/N"),
+        "software": _after(values.get("Q101"), "SOFTWARE VERSION")
+        or (_after(values.get("Q101"), "SOFTWARE") or "").removeprefix("VER ") or None,
         "model": _after(values.get("Q102"), "MODEL"),
     }
     return {k: v for k, v in data.items() if v is not None}
@@ -126,6 +177,8 @@ class LiveState:
         self._still_at = None            # when the spindle stopped while running
         self._written = None             # (connected, data) last written
         self._written_at = 0.0
+        self._sent = {}                  # table var -> value last sent
+        self._fault_since = {}           # fault -> when it came on
 
     def start(self):
         self._thread.start()
@@ -136,7 +189,8 @@ class LiveState:
     def read(self):
         """(connected, data), and queues a run state change."""
         connected = self.monitor.connected
-        data = snapshot(self.monitor.values, self.monitor.mtc) if connected else {}
+        lathe = self.monitor.tables is TABLES_LATHE
+        data = snapshot(self.monitor.values, self.monitor.mtc, lathe) if connected else {}
         if connected:
             for key in ("program", "parts"):
                 if key in data:
@@ -160,6 +214,14 @@ class LiveState:
                 at = max(self._still_at, self._state_at + timedelta(milliseconds=1))
             self._state, self._state_at = state, at
             self._runs.append((at, state))
+        faults = data.get("faults", [])
+        for fault in faults:
+            since = self._fault_since.setdefault(fault, now)
+            if since and (now - since).total_seconds() >= FAULT_EVENT_SECONDS:
+                logger.info(f"[HAAS] {FAULT_NAMES[fault]}.", extra={"code": "cnc_input"})
+                self._fault_since[fault] = None   # once until it clears
+        for fault in [f for f in self._fault_since if f not in faults]:
+            del self._fault_since[fault]
         alarm = data.get("alarm")
         if alarm != self._alarm:
             self._alarm = alarm
@@ -176,6 +238,19 @@ class LiveState:
                             SET connected = EXCLUDED.connected, data = EXCLUDED.data, seen_at = now()""",
                          (self.machine_id, connected, Jsonb(data)))
             self._written, self._written_at = (connected, data), time.monotonic()
+        if connected:
+            values = self.monitor.values
+            changed = []
+            for command in self.monitor.tables:
+                text = _after(values.get(command), "MACRO")
+                v = _number(text and text.rsplit(",", 1)[-1].strip())
+                var = int(command.split()[1])
+                if v is not None and self._sent.get(var) != v:
+                    changed.append((var, v))
+            if changed:
+                with conn.cursor() as cur:
+                    cur.executemany(UPSERT_VALUE, [(self.machine_id, var, v) for var, v in changed])
+                self._sent.update(changed)
         while self._runs:
             at, state = self._runs[0]
             conn.execute("INSERT INTO machine_run_state (machine_id, at, state) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
@@ -190,7 +265,7 @@ class LiveState:
                 if conn is None or conn.closed:
                     conn = get_server_connection(timeout=3)
                     conn.autocommit = True
-                    self._written = None
+                    self._written, self._sent = None, {}
                 self.write(conn)
                 if failing:
                     logger.info("[HAAS] Sending live data again.")

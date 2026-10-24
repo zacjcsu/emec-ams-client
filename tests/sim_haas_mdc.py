@@ -261,8 +261,8 @@ check("classic: door open and coolant off on the dashboard", snap.get("door_open
 check("classic: polls the feed word and work position", "Q600 4109" in mon.values and "Q600 5043" in mon.values)
 STATE["Q600 2004"] = "MACRO, 2004,      -5.123400"
 check("classic: reads the tool offsets a few at a time",
-      wait_for(lambda: mon.values.get("Q600 2004") == STATE["Q600 2004"] and "Q600 5920" in mon.values, 90)
-      and "Q600 5920 = 'MACRO, 5920, INVALID'  raw=b'\\x02MACRO, 5920, INVALID\\x17'  (snapshot)" in log())
+      wait_for(lambda: mon.values.get("Q600 2004") == STATE["Q600 2004"] and "Q600 5720" in mon.values, 90)
+      and "Q600 5720 = 'MACRO, 5720, INVALID'  raw=b'\\x02MACRO, 5720, INVALID\\x17'  (snapshot)" in log())
 check("classic: a lathe gets the lathe's offsets", haas_mdc.LATHE_MODEL.match("MODEL, TL1")
       and haas_mdc.LATHE_MODEL.match("MODEL,ST10") and not haas_mdc.LATHE_MODEL.match("MODEL, TM3P")
       and mon.tables is haas_mdc.TABLES_MILL)

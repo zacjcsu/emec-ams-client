@@ -48,7 +48,7 @@ FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
 # and the powered servos output. The lathe's #1100 is its hydraulic pump. Names are from the 2007 electrical service
 # manual, pages 31 to 33.
 FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105", "Q600 1007", "Q600 1010", "Q600 1011", "Q600 1012", "Q600 1013",
-                       "Q600 1100")
+                       "Q600 1100", "Q600 3023")   # and this part's time, since it has no MTConnect ThisCycle
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
     "Q100",        # serial number
@@ -61,28 +61,22 @@ SLOW = (
     "Q304",        # previous cycle time
     "Q402",        # M30 counter 1
     "Q403",        # M30 counter 2
-    "Q600 3020",   # power-on timer
-    "Q600 3021",   # cycle start timer
     "Q600 3022",   # feed timer
-    "Q600 3026",   # tool in spindle
     "Q600 3030",   # single block
     "Q600 3011",   # control's date
     "Q600 3012",   # control's time
-    "Q600 3023",   # this part's time
-    "Q600 3024",   # last part's time
-    "Q600 3025",   # previous part's time
 )
 # Read a few each round, logged when they change, and all of them again every TABLES_SNAPSHOT_SECONDS. First the
 # G52 and G54-G59 work offsets, the highest X, Y, Z, A and B axis load seen, and tools 1 to 20. Then the other tools,
 # the common variables #100-#199 and #500-#699, the block end, machine and skip positions, the length offset in
-# effect, G110 and G111, and #8550-#8564, which only TM-2P answers.
-# Per tool: feed time, total time, tool life limit and count, the highest load seen and its limit, and the offsets.
+# effect, and G110 and G111.
+# Per tool: feed time, tool life count and the offsets. The dashboard shows each day's change in the first two.
 # A mill's are length and wear, then diameter and wear, for 200 tools. A lathe's are X, Z, nose radius and tip
 # geometry, then X, Z and radius wear, for 50.
-_TOOL_DATA = (5400, 5500, 5600, 5700, 5800, 5900)   # tools 1 to 99, since #5700 isn't tool 100's life limit
+_TOOL_DATA = (5400, 5700)   # tools 1 to 99
 _FIRST = (*(b + i for b in range(5201, 5322, 20) for i in range(6)), *range(1064, 1069))
 _REST = (*range(100, 200), *range(500, 700), *range(5001, 5007), *range(5021, 5027), *range(5061, 5067),
-         *range(5081, 5087), *range(7001, 7007), *range(7021, 7027), *range(8550, 8565))
+         *range(5081, 5087), *range(7001, 7007), *range(7021, 7027))
 
 
 def _tables(offsets, tools):
