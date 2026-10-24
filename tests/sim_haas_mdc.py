@@ -337,6 +337,14 @@ busy = x_reads(3)
 check(f"position: read once a round while idle ({idle} in 3 s)", idle <= 3)
 check(f"position: read every position_seconds while running ({busy} in 3 s)", busy >= 8)
 check("position: N word read with it", asked.count("Q600 4114") >= asked.count("Q600 5041") - 1)
+check("position: no arc or cycle words on a line", "Q600 4104" not in asked and "Q600 4126" not in asked)
+STATE["Q600 4001"] = "MACRO, 4001,       2.000000"
+check("position: an arc's I, J and plane read", wait_for(lambda: "Q600 4104" in asked and "Q600 4002" in asked, 10))
+STATE["Q600 4001"] = "MACRO, 4001,       1.000000"
+STATE["Q600 4009"] = "MACRO, 4009,      81.000000"
+check("position: a canned cycle's Z read", wait_for(lambda: "Q600 4126" in asked, 10))
+check("position: macro_value", haas_mdc.macro_value("MACRO, 4009,      81.000000") == 81
+      and haas_mdc.macro_value("MACRO, -0.25") == -0.25 and haas_mdc.macro_value("MACRO, 4110, INVALID") is None)
 mon.stop()
 
 print("all passed" if not fails else f"{fails} failed")

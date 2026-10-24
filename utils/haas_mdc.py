@@ -51,8 +51,12 @@ FAST_NGC = FAST + ("Q600 12018", "Q600 11066", "Q600 11067")
 # manual, pages 31 to 33.
 FAST_CLASSIC = FAST + ("Q600 1008", "Q600 1105", "Q600 1007", "Q600 1010", "Q600 1011", "Q600 1012", "Q600 1013",
                        "Q600 1100", "Q600 3023")   # and this part's time, since it has no MTConnect ThisCycle
-# Work X, Y and Z and the N word, read every position_seconds between rounds while a program runs
-POSITION = ("Q600 5041", "Q600 5042", "Q600 5043", "Q600 4114")
+# Read every position_seconds between rounds while a program runs, for the G-code viewer: work X, Y and Z, the N word,
+# the motion G code and the canned cycle. In an arc, also its I, J, K and R and the plane. In a canned cycle, its Z
+# and R. #4101 to #4126 hold the last value of each address, numbered like macro arguments.
+POSITION = ("Q600 5041", "Q600 5042", "Q600 5043", "Q600 4114", "Q600 4001", "Q600 4009")
+ARC = ("Q600 4104", "Q600 4105", "Q600 4106", "Q600 4118", "Q600 4002")
+CYCLE = ("Q600 4126", "Q600 4118")
 RUNNING = re.compile(r"STATUS,?\s*BUSY")   # Q500 while a program runs, as utils/live_state.py reads it
 # Polled every SNAPSHOT_SECONDS. Q600 reads a macro or system variable.
 SLOW = (
@@ -119,6 +123,12 @@ SEND_STALL_SECONDS = 60     # longest pause the control may ask for
 AFTER_SEND_SECONDS = 20     # for the control to answer again after the closing %
 XON, XOFF = 0x11, 0x13
 ASYNC_LOW_LATENCY = 0x2000
+
+
+def macro_value(value):
+    """The number at the end of a Q600 answer, or None."""
+    m = re.search(r"(-?[\d.]+)\s*$", value or "")
+    return float(m.group(1)) if m else None
 
 
 def clean(raw):
@@ -510,15 +520,23 @@ class HaasMonitor:
                 self._silent.add(command)
                 break
 
+    def _poll_move(self):
+        """An arc's or a canned cycle's words, for the move just read."""
+        motion, cycle = macro_value(self.values.get("Q600 4001")), macro_value(self.values.get("Q600 4009"))
+        for command in ARC if motion in (2, 3) else CYCLE if cycle and cycle != 80 else ():
+            self._poll(command)
+
     def _between_rounds(self):
         """Waits poll_seconds, reading the position meanwhile while a program runs and position_seconds is set."""
         end = time.monotonic() + self.poll_seconds
         if self.position_seconds and RUNNING.match(self.values.get("Q500", "").lstrip("> ")):
+            self._poll_move()   # the round read the position, but not these
             next_at = time.monotonic() + self.position_seconds
             while next_at < end and not self.job:
                 if self._stop.wait(max(0.0, next_at - time.monotonic())):
                     return
                 self._poll_all(POSITION)
+                self._poll_move()
                 next_at = max(next_at + self.position_seconds, time.monotonic())
         self._stop.wait(max(0.0, end - time.monotonic()))
 
