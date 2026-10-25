@@ -313,7 +313,7 @@ mon.stop()
 mon._thread.join(20)
 mon.client.close()
 
-mon = haas_mdc.HaasMonitor.classic(classic.device, poll_seconds=1.5, position_seconds=0.25)
+mon = haas_mdc.HaasMonitor.classic(classic.device, poll_seconds=1.5)
 asked = []
 ask = mon.client.ask
 mon.client.ask = lambda command: asked.append(command) or ask(command)
@@ -321,21 +321,11 @@ STATE["Q104"] = "MODE, MEM"
 STATE["Q500"] = "PROGRAM, O00100, IDLE, PARTS, 7"
 mon.start()
 check("position: connects", wait_for(lambda: mon.values.get("Q500") == STATE["Q500"], 20))
-
-
-def x_reads(seconds):
-    time.sleep(1.5)   # into the next round
-    n = asked.count("Q600 5041")
-    time.sleep(seconds)
-    return asked.count("Q600 5041") - n
-
-
-idle = x_reads(3)
-STATE["Q500"] = "STATUS BUSY"
-check("position: seen running", wait_for(lambda: mon.values.get("Q500") == "STATUS BUSY", 10))
-busy = x_reads(3)
-check(f"position: read once a round while idle ({idle} in 3 s)", idle <= 3)
-check(f"position: read every position_seconds while running ({busy} in 3 s)", busy >= 8)
+reads, rounds, t = asked.count("Q600 5041"), asked.count("Q500"), time.monotonic()
+check("position: rounds go on", wait_for(lambda: asked.count("Q500") - rounds >= 3, 30))
+seconds, reads = time.monotonic() - t, asked.count("Q600 5041") - reads
+check(f"position: the rest only once a round (3 rounds in {seconds:.1f} s)", seconds >= 2 * mon.poll_seconds)
+check(f"position: read back to back between rounds ({reads} in 3 rounds)", reads >= 30)
 check("position: N word read with it", asked.count("Q600 4114") >= asked.count("Q600 5041") - 1)
 check("position: no arc or cycle words on a line", "Q600 4104" not in asked and "Q600 4126" not in asked)
 STATE["Q600 4001"] = "MACRO, 4001,       2.000000"
