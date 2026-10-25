@@ -68,10 +68,16 @@ class FakeControl:
 # (sequence, element) changes, as the control numbers them
 CHANGES = [(1, '<Execution dataItemId="rstat" name="RunStatus" sequence="1" timestamp="t1">STOPPED</Execution>'),
            (2, '<Normal dataItemId="mcond" name="MachineCondition" type="SYSTEM" sequence="2" timestamp="t2"/>')]
+PENDING = []   # changes to CHANGES, made at the next sample request
 
 
 class FakeMTConnect(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # The reader follows an OUT_OF_RANGE sample with /current. A change between the two would look like a miss,
+        # so the test's changes land only at a sample.
+        if "from=" in self.path:
+            while PENDING:
+                PENDING.pop(0)()
         first, next_ = CHANGES[0][0], CHANGES[-1][0] + 1
         start = int(self.path.split("from=")[1].split("&")[0]) if "from=" in self.path else first
         rows = CHANGES if self.path == "/current" else [c for c in CHANGES if c[0] >= start]
@@ -134,14 +140,16 @@ check("unchanged answers are not logged again", log().count("Q500 = ") == lines)
 
 STATE["Q500"] = "PROGRAM, O00001, BUSY, PARTS, 380"
 check("a change is logged", wait_for(lambda: "BUSY" in log()))
-CHANGES.append((3, '<Fault dataItemId="mcond" name="MachineCondition" type="SYSTEM" sequence="3" '
-                   'timestamp="t3">107 EMERGENCY OFF</Fault>'))
+FAULT = ('<Fault dataItemId="mcond" name="MachineCondition" type="SYSTEM" sequence="3" '
+         'timestamp="t3">107 EMERGENCY OFF</Fault>')
+PENDING.append(lambda: CHANGES.append((3, FAULT)))
 check("an MTConnect change is logged once", wait_for(lambda: "MachineCondition = 'Fault 107 EMERGENCY OFF'" in log())
       and (time.sleep(0.5) or log().count("EMERGENCY OFF") == 1))
 check("old MTConnect changes are not logged again", log().count("RunStatus = 'STOPPED'") == 1)
 check("nothing new is not logged as an error", "MTConnect: " not in log())
 
-CHANGES[:] = [(seq + 10, row.replace(f'sequence="{seq}"', f'sequence="{seq + 10}"')) for seq, row in CHANGES]
+PENDING.append(lambda: CHANGES.__setitem__(slice(None), [
+    (seq + 10, row.replace(f'sequence="{seq}"', f'sequence="{seq + 10}"')) for seq, row in CHANGES]))
 check("missed changes reread the current values",
       wait_for(lambda: "MTConnect: missed changes from 4" in log())
       and wait_for(lambda: log().count("RunStatus = 'STOPPED'") == 2))
@@ -173,22 +181,28 @@ class FakeClassic:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
-        buf = b""
+        buf, program, receiving = b"", b"", False
         while True:
             select.select([self.master], [], [])
-            buf += os.read(self.master, 1024)
+            data = os.read(self.master, 1024)
+            # RECV takes everything as program text. What came in it is never answered, as on a real control.
             if self.recv.is_set():
-                if self.pause_after is not None and len(buf) >= self.pause_after:
+                if not receiving:
+                    buf, program, receiving = b"", b"", True
+                program += data
+                if self.pause_after is not None and len(program) >= self.pause_after:
                     self.pause_after = None
                     os.write(self.master, b"\x13")
                     threading.Timer(1, lambda: os.write(self.master, b"\x11")).start()
-                lines = buf.split(b"\r\n")
+                lines = program.split(b"\r\n")
                 marks = [i for i, line in enumerate(lines) if line.strip() == b"%"]
                 if len(marks) >= 2:
                     self.received = b"\r\n".join(lines[marks[0]:marks[1] + 1]) + b"\r\n"
-                    buf = b""
                     self.recv.clear()
+                    receiving = False
                 continue
+            receiving = False
+            buf += data
             while b"\r\n" in buf:
                 line, buf = buf.split(b"\r\n", 1)
                 if self.off.is_set():
@@ -208,6 +222,9 @@ classic = FakeClassic()
 classic.off.set()
 haas_mdc.DISCOVER_CLASSIC = ("Q101", "Q600 1000")
 haas_mdc.ANSWER_SECONDS = 1   # a round with the machine off waits this long for each command
+# Silence is only taken as off at the start of a round, so a machine switched off mid-round waits out the rest of it.
+ROUND = len(haas_mdc.FAST_CLASSIC) + len(haas_mdc.SLOW) + haas_mdc.TABLES_PER_ROUND + len(haas_mdc.POSITION)
+OFF_NOTICED = 2 * ROUND * haas_mdc.ANSWER_SECONDS + 5
 STATE["Q500"] = "PROGRAM, O00100, IDLE, PARTS, 7"
 start = len(log())
 
@@ -237,7 +254,7 @@ check("classic: no prompt left in a value", not any(v.startswith(">") for v in m
 STATE["Q600 3027"] = "MACRO, 3027, 1200.000000"
 classic.delay = 0.6   # longer than QUIET_SECONDS
 check("classic: a frame that comes late still lands on its command",
-      wait_for(lambda: mon.values.get("Q600 3027") == STATE["Q600 3027"], 20))
+      wait_for(lambda: mon.values.get("Q600 3027") == STATE["Q600 3027"], 2 * ROUND * classic.delay + 5))
 classic.delay = 0
 for stale in (b"\x02MACRO, 3, -16777215.000000\x17\r\n>", b"\x02MACRO, 4294967295, INVALID\x17\r\n>"):
     classic.stale = stale
@@ -267,7 +284,7 @@ check("classic: a lathe gets the lathe's offsets", haas_mdc.LATHE_MODEL.match("M
       and haas_mdc.LATHE_MODEL.match("MODEL,ST10") and not haas_mdc.LATHE_MODEL.match("MODEL, TM3P")
       and mon.tables is haas_mdc.TABLES_MILL)
 classic.off.set()
-check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), 20))
+check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), OFF_NOTICED))
 classic.off.clear()
 check("classic: reconnects", wait_for(lambda: log().count("connected to") >= 2 and mon.connected, 20))
 
@@ -283,14 +300,15 @@ job = haas_mdc.SendJob(1, program, lambda: claims.append(1) or True)
 mon.send(job)
 check("send: waits for RECV while the mill answers", wait_for(lambda: job.detail == "Press RECV"))
 classic.off.set()
-check("send: silence off the program list isn't RECV", wait_for(lambda: job.detail == "Mill off", 20) and not claims)
+check("send: silence off the program list isn't RECV", wait_for(lambda: job.detail == "Mill off", OFF_NOTICED)
+      and not claims)
 classic.off.clear()
 check("send: reconnects", wait_for(lambda: mon.connected, 20))
 STATE["Q104"] = "MODE, LISTPROG"
 check("send: sees the program list", wait_for(lambda: "LISTPROG" in (mon.mode or "")))
 classic.pause_after = 2000
 classic.recv.set()
-check("send: sent after RECV", wait_for(lambda: job.done.is_set(), 40) and job.state == "sent")
+check("send: sent after RECV", wait_for(lambda: job.done.is_set(), OFF_NOTICED + 20) and job.state == "sent")
 check("send: claimed once", claims == [1])
 check("send: the control got the program whole", classic.received == program)
 check("send: reconnects after", wait_for(lambda: mon.connected, 20))
@@ -298,7 +316,8 @@ check("send: reconnects after", wait_for(lambda: mon.connected, 20))
 job = haas_mdc.SendJob(2, program, lambda: False)
 mon.send(job)
 classic.recv.set()
-check("send: a cancelled claim isn't sent", wait_for(lambda: job.done.is_set(), 40) and job.state == "cancelled")
+check("send: a cancelled claim isn't sent",
+      wait_for(lambda: job.done.is_set(), OFF_NOTICED + 10) and job.state == "cancelled")
 classic.recv.clear()
 check("send: reconnects after a cancel", wait_for(lambda: mon.connected, 20))
 
@@ -306,7 +325,8 @@ job = haas_mdc.SendJob(3, program, lambda: True)
 mon.send(job)
 classic.recv.set()
 classic.off.set()   # stays silent after the send, like a mill switched off
-check("send: no answer after is a failure", wait_for(lambda: job.done.is_set(), 60) and job.state == "failed")
+check("send: no answer after is a failure",
+      wait_for(lambda: job.done.is_set(), OFF_NOTICED + haas_mdc.AFTER_SEND_SECONDS + 20) and job.state == "failed")
 classic.recv.clear()
 classic.off.clear()
 mon.stop()
