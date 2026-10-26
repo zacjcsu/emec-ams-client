@@ -91,9 +91,11 @@ class RFIDReader:
             return scan
 
         trimmed = data[3:8]
-        csu_id = int.from_bytes(trimmed, byteorder='big') // 10
+        number = int.from_bytes(trimmed, byteorder='big')
+        csu_id = number // 10
 
-        logger.info(f"[RFID] Card scanned - UID: {uid_num}, CSU ID: {csu_id}")
+        # The last digit is which card the person is on
+        logger.info(f"[RFID] Card scanned - UID: {uid_num}, CSU ID: {csu_id}, card {number % 10}")
         return CardScan(scan.uid, scan.uid_hex, uid_num, csu_id)
 
     def wait_until_removed(self, poll=CARD_POLL_INTERVAL, max_seconds=None, recheck=None, recheck_every=2.0):
