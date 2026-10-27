@@ -8,6 +8,7 @@ set -euo pipefail
 
 APP_DIR=/home/emec/emec-ams
 APP_USER=emec
+CONFIG_JSON="${APP_DIR}/config/config.json"
 PROGRAMS=/home/emec/haas-programs
 UNIT=/etc/systemd/system/emec-usb-drive.service
 MODULES=/etc/modules-load.d/emec-usb-drive.conf
@@ -17,11 +18,30 @@ CONFIG_TXT=/boot/firmware/config.txt
 
 [[ $EUID -eq 0 ]] || { echo "Run it with sudo."; exit 1; }
 
+# Sets "program_upload" in config.json to usb, or with no value drops it if it's usb. The app takes it at its next
+# restart.
+set_upload() {
+    [[ -f "$CONFIG_JSON" ]] || return 0
+    python3 - "$CONFIG_JSON" "$1" <<'PY'
+import json, sys
+path, upload = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+if upload:
+    data["program_upload"] = upload
+elif data.get("program_upload") == "usb":
+    del data["program_upload"]
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
 if [[ "${1:-}" == "--remove" ]]; then
     systemctl disable --now emec-usb-drive 2>/dev/null || true
     rm -f "$UNIT" "$MODULES"
     systemctl daemon-reload
     sed -i "/^${OVERLAY}\$/d" "$CONFIG_TXT"
+    set_upload ""
     echo "Removed. ${PROGRAMS} is left in place. Reboot to give the USB-C port back."
     exit 0
 fi
@@ -33,6 +53,7 @@ fi
 printf 'nbd\nlibcomposite\n' > "$MODULES"
 # The app copies the dashboard's programs here once it exists, after its next restart.
 install -d -o "$APP_USER" -g "$APP_USER" "$PROGRAMS"
+set_upload usb
 
 cat > "$UNIT" <<EOF
 [Unit]
@@ -53,4 +74,5 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable emec-usb-drive >/dev/null
-echo "Installed emec-usb-drive. Reboot, then check: journalctl -u emec-usb-drive, logs/usb_drive.log"
+echo "Installed emec-usb-drive, and set program_upload to usb in config.json."
+echo "Reboot, then check: journalctl -u emec-usb-drive, logs/usb_drive.log"

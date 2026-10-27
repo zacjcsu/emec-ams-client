@@ -12,7 +12,7 @@
 #   DB_HOST DB_PORT DB_USER DB_NAME MACHINE_NAME MACHINE_TYPE (the category ID) MACHINE_KIND (attended, cnc)
 #   SCREEN READER (yes, no) CONTACTOR_SWITCH (none, true, inverted) CONTACTOR_PIN
 #   CONTROL (none, haas-ngc, haas-classic) HAAS_HOST HAAS_PORT SERIAL_DEVICE SERIAL_BAUD
-#   SHARE_PROGRAMS (yes, no) HAAS_SMB_PASS
+#   PROGRAM_UPLOAD (share, usb, serial, none) HAAS_SMB_PASS
 
 set -euo pipefail
 
@@ -367,7 +367,7 @@ CPU_SERIAL="$(sed -n 's/^Serial[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/de
 
 # Re-run: what's already in this Pi's config.json is the default for each question.
 CFG_ID=""; CFG_NAME=""; CFG_TYPE=""; CFG_KIND=""; CFG_SCREEN=""; CFG_READER=""; CFG_CONTACTOR=""; CFG_PIN=""
-CFG_CONTROL=""; CFG_HAAS_HOST=""; CFG_HAAS_PORT=""; CFG_SERIAL_DEVICE=""; CFG_SERIAL_BAUD=""
+CFG_CONTROL=""; CFG_HAAS_HOST=""; CFG_HAAS_PORT=""; CFG_SERIAL_DEVICE=""; CFG_SERIAL_BAUD=""; CFG_UPLOAD=""
 if [[ -f "$CONFIG_FILE" ]]; then
     eval "$(python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
 import json, shlex, sys
@@ -386,6 +386,7 @@ values = {
     "CFG_PIN": d.get("contactor_pin"), "CFG_CONTROL": md.get("control"),
     "CFG_HAAS_HOST": md.get("host"), "CFG_HAAS_PORT": md.get("port"),
     "CFG_SERIAL_DEVICE": md.get("device"), "CFG_SERIAL_BAUD": md.get("baud"),
+    "CFG_UPLOAD": d.get("program_upload"),
 }
 for k, v in values.items():
     if v not in (None, ""):
@@ -501,14 +502,29 @@ case "$CONTROL" in
         ask_number SERIAL_BAUD "Serial baud" "${CFG_SERIAL_BAUD:-9600}" ;;
 esac
 
-SHARE_PROGRAMS="${SHARE_PROGRAMS:-}"
+PROGRAM_UPLOAD="${PROGRAM_UPLOAD:-}"
 HAAS_SMB_PASS="${HAAS_SMB_PASS:-}"
-# Only an NGC control reads programs from a network share. A classic one has only its RS-232 port here.
-if [[ "$CONTROL" == haas-ngc ]]; then
-    ask_choice SHARE_PROGRAMS "Share programs with the control" yes yes no
+# An older unattended run passes SHARE_PROGRAMS.
+case "${SHARE_PROGRAMS:-}" in
+    yes) PROGRAM_UPLOAD="${PROGRAM_UPLOAD:-share}" ;;
+    no)  PROGRAM_UPLOAD="${PROGRAM_UPLOAD:-none}" ;;
+esac
+# An NGC control reads programs from a network share, a classic one over its RS-232 port. Either can read the Pi's
+# USB-C port as a flash drive instead (usb_drive_setup.sh), on a Pi powered by PoE.
+case "$CONTROL" in
+    haas-ngc)     UPLOADS=(share usb none) ;;
+    haas-classic) UPLOADS=(serial usb none) ;;
+    *)            UPLOADS=(none) ;;
+esac
+DEF_UPLOAD="${UPLOADS[0]}"
+is_one_of "$CFG_UPLOAD" "${UPLOADS[@]}" && DEF_UPLOAD="$CFG_UPLOAD"
+if (( ${#UPLOADS[@]} > 1 )); then
+    ask_choice PROGRAM_UPLOAD "Programs reach the control by" "$DEF_UPLOAD" "${UPLOADS[@]}"
 else
-    SHARE_PROGRAMS="${SHARE_PROGRAMS:-no}"
+    PROGRAM_UPLOAD=none
 fi
+SHARE_PROGRAMS=no
+[[ "$PROGRAM_UPLOAD" == share ]] && SHARE_PROGRAMS=yes
 if [[ "$SHARE_PROGRAMS" == yes ]] && [[ -z "$HAAS_SMB_PASS" ]] \
    && ! { command -v pdbedit >/dev/null && sudo pdbedit -L 2>/dev/null | grep -q '^haas:'; }; then
     ask_secret HAAS_SMB_PASS "Password the control signs in with, as user haas"
@@ -686,13 +702,13 @@ EOF
 fi
 
 PROGRAM_FOLDER=""
-[[ "$SHARE_PROGRAMS" == yes ]] && PROGRAM_FOLDER="$PROGRAM_DIR"
+[[ "$PROGRAM_UPLOAD" == share || "$PROGRAM_UPLOAD" == usb ]] && PROGRAM_FOLDER="$PROGRAM_DIR"
 # Keys this script doesn't ask about are kept. So are a control's other settings, like poll_seconds.
 CFG_ID="$MACHINE_ID" CFG_NAME="$MACHINE_NAME" CFG_TYPE="$MACHINE_TYPE" CFG_KIND="$MACHINE_KIND" \
 CFG_SCREEN="$SCREEN" CFG_READER="$READER" CFG_CONTACTOR="$CONTACTOR_SWITCH" CFG_PIN="$CONTACTOR_PIN" \
 CFG_CONTROL="$CONTROL" CFG_HAAS_HOST="$HAAS_HOST" CFG_HAAS_PORT="$HAAS_PORT" \
 CFG_SERIAL_DEVICE="$SERIAL_DEVICE" CFG_SERIAL_BAUD="$SERIAL_BAUD" \
-CFG_PROGRAM_DIR="$PROGRAM_FOLDER" \
+CFG_PROGRAM_DIR="$PROGRAM_FOLDER" CFG_UPLOAD="$PROGRAM_UPLOAD" \
 python3 - "$CONFIG_FILE" <<'PY'
 import json, os, sys
 path, e = sys.argv[1], os.environ
@@ -727,6 +743,7 @@ if e["CFG_PROGRAM_DIR"]:
     data["program_folder"] = e["CFG_PROGRAM_DIR"]
 else:
     data.pop("program_folder", None)
+data["program_upload"] = e["CFG_UPLOAD"]
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -804,6 +821,18 @@ EOF
     sudo systemctl enable smbd nmbd >/dev/null 2>&1 || true
     sudo systemctl restart smbd nmbd || warn "Samba didn't start. Check: journalctl -u smbd"
     ok "Sharing ${PROGRAM_DIR} as \\\\${SMB_NAME}\\programs"
+fi
+
+# The USB-C port changes mode only at a reboot.
+USB_REBOOT=0
+if [[ "$PROGRAM_UPLOAD" == usb ]]; then
+    step "USB drive for the control"
+    sudo bash "${APP_DIR}/usb_drive_setup.sh" >/dev/null && ok "emec-usb-drive installed" \
+        || warn "usb_drive_setup.sh failed. Run it by hand: sudo bash ${APP_DIR}/usb_drive_setup.sh"
+    USB_REBOOT=1
+elif [[ -f /etc/systemd/system/emec-usb-drive.service ]]; then
+    sudo bash "${APP_DIR}/usb_drive_setup.sh" --remove >/dev/null && ok "USB drive removed"
+    USB_REBOOT=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -1021,6 +1050,11 @@ EOF
 if [[ "$SHARE_PROGRAMS" == yes ]]; then
     printf '\n  On the control, set the Net Share to server name %s, share name programs,\n' "$SMB_NAME"
     printf '  user name haas and Domain/Workgroup WORKGROUP. Use the name, not an IP.\n'
+fi
+
+if (( USB_REBOOT )); then
+    printf '\n%s[action needed]%s Reboot once for the USB-C port to change: sudo reboot\n' "$C_YELLOW" "$C_RESET"
+    [[ "$PROGRAM_UPLOAD" == usb ]] && printf '    Block VBUS on the cable from the USB-C port to the control.\n'
 fi
 
 if (( REBOOT_NEEDED )); then

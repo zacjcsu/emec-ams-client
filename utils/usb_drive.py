@@ -49,6 +49,7 @@ STICK_DIR = "/run/emec-usb-drive/stick"
 GADGET = "/sys/kernel/config/usb_gadget/emec"
 NBD_DEVICE = "/dev/nbd0"
 RUN_STATE_FILE = "data/run_state"   # written by utils/live_state.py
+CONFIG_FILE = "config/config.json"
 STICK_DELAY = "/sys/module/usb_storage/parameters/delay_use"
 
 # linux/nbd.h and linux/fs.h
@@ -596,11 +597,15 @@ class Stick:
 
 
 def _code_stamp():
-    try:
-        st = os.stat(__file__)
-    except OSError:
-        return None
-    return st.st_mtime_ns, st.st_size
+    """Changes with this file or config.json."""
+    out = []
+    for path in (__file__, CONFIG_FILE):
+        try:
+            st = os.stat(path)
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
 
 
 def machine_running(run_state_file, now=None):
@@ -678,7 +683,7 @@ class UsbDrive:
                 except subprocess.TimeoutExpired:
                     imports = False
                 if imports:
-                    logger.info("New code. Starting again")
+                    logger.info("New code or config. Starting again")
                     return True
                 logger.info("New code doesn't import. Keeping this one")
                 if current == shown:
@@ -712,10 +717,16 @@ def _files(node):
 
 
 def main():
-    from config.constants import load_program_folder
+    from config.constants import load_program_folder, load_program_upload
     handler = TimedRotatingFileHandler("logs/usb_drive.log", when="midnight", backupCount=200)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     logging.basicConfig(level=logging.INFO, handlers=[handler, logging.StreamHandler()])
+    if load_program_upload() != "usb":
+        logger.info('program_upload in config.json isn\'t "usb", so there\'s no drive')
+        stamp = _code_stamp()
+        while _code_stamp() == stamp:
+            time.sleep(5)
+        os.execv(sys.executable, [sys.executable, "-m", "utils.usb_drive"])
     folder = load_program_folder()
     if not folder:
         logger.info("No program folder, so LOCAL is empty. usb_drive_setup.sh makes /home/emec/haas-programs.")

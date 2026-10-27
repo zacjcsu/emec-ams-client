@@ -53,7 +53,26 @@ def load_machine_data_config():
     return dict(data) if isinstance(data, dict) else None
 
 MACHINE_DATA = load_machine_data_config()
-PROGRAM_SERIAL = (MACHINE_DATA or {}).get("control") == "haas-classic"   # programs go over the reader's port
+UPLOADS = ("share", "usb", "serial", "none")
+
+
+def load_program_upload():
+    """How the dashboard's programs reach the control, from "program_upload" in config.json: "share" (Samba, on an
+    NGC), "usb" (utils/usb_drive.py), "serial" (RS-232, on a classic) or "none". Without it, a classic control takes
+    them over RS-232 and other machines share their program folder."""
+    try:
+        with open("config/config.json", "r") as f:
+            upload = json.load(f).get("program_upload")
+    except Exception:
+        upload = None
+    if upload in UPLOADS:
+        return upload
+    return "serial" if (MACHINE_DATA or {}).get("control") == "haas-classic" else "share"
+
+
+PROGRAM_UPLOAD = load_program_upload()
+# Programs go over the reader's port.
+PROGRAM_SERIAL = PROGRAM_UPLOAD == "serial" and (MACHINE_DATA or {}).get("control") == "haas-classic"
 
 
 def load_program_folder():
@@ -65,7 +84,7 @@ def load_program_folder():
         folder = "/home/emec/haas-programs"
     return folder if folder and os.path.isdir(folder) else None
 
-PROGRAM_FOLDER = load_program_folder()
+PROGRAM_FOLDER = load_program_folder() if PROGRAM_UPLOAD in ("share", "usb") else None
 
 
 def load_fitted():

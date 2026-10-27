@@ -25,8 +25,8 @@ import signal
 import sys
 from db.local_db import LocalDB
 from config.constants import (CAMERA, CARD_POLL_INTERVAL, CONTACTOR_SWITCH, LCD_MESSAGES, MACHINE_DATA, MACHINE_ID,
-                              PROGRAM_FOLDER, READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE, STATUS_OFFLINE,
-                              UPDATE_AFTER_SESSION, UPDATE_FLAG)
+                              PROGRAM_FOLDER, PROGRAM_SERIAL, READER_FITTED, SCREEN_FITTED, STATUS_MAINTENANCE,
+                              STATUS_OFFLINE, UPDATE_AFTER_SESSION, UPDATE_FLAG)
 from db.server_sync import push_machine_status, cardless_begin, get_server_connection
 from utils import pi_events
 import logging
@@ -91,7 +91,7 @@ def make_machine_data():
 machine_data = make_machine_data()
 haas = machine_data if isinstance(machine_data, HaasMonitor) else None
 live = LiveState(MACHINE_ID, haas) if haas else None
-sender = ProgramSender(MACHINE_ID, haas) if haas and haas.can_send else None
+sender = ProgramSender(MACHINE_ID, haas) if PROGRAM_SERIAL and haas and haas.can_send else None
 if CONTACTOR_SWITCH:
     power = PowerMonitor(MACHINE_ID, relay)
 elif isinstance(machine_data, V1000Monitor):
