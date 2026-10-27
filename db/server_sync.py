@@ -290,7 +290,8 @@ def push_user_update(csu_id):
 def push_access_requests():
     """Send this machine's locally raised requests to the server. The server assigns request_id
     (local ids would collide across Pis), and a request already under review is not duplicated.
-    False if they couldn't be sent."""
+    One the server already has, by its time, isn't sent again, since the local copy is still under review after
+    a dashboard review until the next pull. False if they couldn't be sent."""
     try:
         with _local() as conn_local:
             requests = conn_local.execute(
@@ -306,7 +307,8 @@ def push_access_requests():
                         "INSERT INTO access_requests (uid, csu_id, machine_id, machine_type, requested_on, status) "
                         "SELECT %(uid)s::varchar, %(csu)s::varchar, %(mid)s::varchar, %(mt)s::varchar, %(ts)s::timestamp, 'under review' "
                         "WHERE NOT EXISTS (SELECT 1 FROM access_requests WHERE csu_id = %(csu)s::varchar "
-                        "AND machine_id = %(mid)s::varchar AND status = 'under review')",
+                        "AND machine_id = %(mid)s::varchar "
+                        "AND (status = 'under review' OR requested_on = %(ts)s::timestamp))",
                         {"uid": uid, "csu": csu_id, "mid": machine_id, "mt": machine_type, "ts": requested_on},
                     )
         logger.info("[SYNC] Access requests synced to server")
