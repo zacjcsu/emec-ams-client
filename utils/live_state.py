@@ -4,6 +4,7 @@ machine_run_state (dashboard migration 079). The dashboard's CNC page shows them
 An alarm also goes to the machine's events, at INFO, so it shows there without raising a problem.
 """
 import logging
+import os
 import re
 import threading
 import time
@@ -16,6 +17,7 @@ from psycopg.types.json import Jsonb
 from db.server_sync import get_server_connection
 from utils.haas_mdc import TABLES_LATHE
 from utils.timeutil import utc_now
+from utils.usb_drive import RUN_STATE_FILE
 
 logger = logging.getLogger("haas")
 
@@ -180,6 +182,7 @@ class LiveState:
         self._written_at = 0.0
         self._sent = {}                  # table var -> value last sent
         self._fault_since = {}           # fault -> when it came on
+        self._shared = None              # (state, when) last written to RUN_STATE_FILE
 
     def start(self):
         self._thread.start()
@@ -208,6 +211,7 @@ class LiveState:
         else:
             self._still_at = None
         state = data.get("state", "Off" if not connected else None)
+        self._share(state)
         if state and state != self._state:
             at = now
             if state == "Stopped":
@@ -230,6 +234,21 @@ class LiveState:
                 name = " ".join(x for x in (alarm["code"], alarm["text"]) if x)
                 logger.info(f"[HAAS] Alarm{' ' + name if name else ''}.", extra={"code": "cnc_alarm"})
         return connected, data
+
+    def _share(self, state):
+        """The USB drive service changes the drive only while this says Idle, so a program running from it isn't cut
+        off. It counts the file as unknown once it's older than REFRESH_SECONDS three times over."""
+        if self._shared and self._shared[0] == state and time.monotonic() - self._shared[1] < REFRESH_SECONDS:
+            return
+        try:
+            with open(RUN_STATE_FILE + ".tmp", "w") as f:
+                f.write(state or "")
+            os.replace(RUN_STATE_FILE + ".tmp", RUN_STATE_FILE)
+            self._shared = (state, time.monotonic())
+        except OSError as e:
+            if self._shared is not False:
+                logger.info(f"[HAAS] Cannot write {RUN_STATE_FILE}: {e}")
+            self._shared = False
 
     def write(self, conn):
         connected, data = self.read()
