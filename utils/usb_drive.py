@@ -18,6 +18,7 @@ Run it with: sudo .venv/bin/python -m utils.usb_drive
 """
 import bisect
 import fcntl
+import json
 import logging
 import os
 import signal
@@ -36,7 +37,9 @@ PART_START = 2048           # sectors before the partition, as on a bought flash
 RESERVED = 32
 FATS = 2
 CLUSTER_SECTORS = 8         # 4 KiB clusters
-DISK_BYTES = 4 * 1024 ** 3  # what the machine sees. Files that don't fit are left out
+DISK_BYTES = 4 * 1024 ** 3  # what the machine sees, unless "usb_drive_gb" in config.json says. Files that don't fit
+                            # are left out
+DISK_GB_RANGE = (0.3, 1024)  # FAT32 with 4 KiB clusters needs about 0.26 GiB and holds up to 1 TiB
 EOC = 0x0FFFFFFF
 MAX_ENTRIES = 10000         # files and folders taken from one folder tree
 MAX_DEPTH = 8
@@ -621,12 +624,13 @@ def machine_running(run_state_file, now=None):
 
 
 class UsbDrive:
-    def __init__(self, program_folder, run_state_file):
+    def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES):
         self.program_folder = program_folder
+        self.disk_bytes = disk_bytes
         self.run_state_file = run_state_file
         self.stick = Stick()
         self.volume = None
-        self.nbd = NbdDevice(self._read, DISK_BYTES)
+        self.nbd = NbdDevice(self._read, disk_bytes)
         self.gadget = Gadget()
         self._stop = threading.Event()
 
@@ -635,7 +639,7 @@ class UsbDrive:
 
     def _build(self):
         folders = [("LOCAL", self.program_folder)] + ([("USB", self.stick.path)] if self.stick.path else [])
-        volume = Volume(folders)
+        volume = Volume(folders, disk_bytes=self.disk_bytes)
         counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
         logger.info(f"Drive built: {counts}")
         return volume
@@ -716,6 +720,22 @@ def _files(node):
             yield from _files(c)
 
 
+def disk_bytes():
+    """The drive's size from "usb_drive_gb" in config.json, in GiB. A bigger drive has a bigger FAT for the machine to
+    read each time it's plugged in."""
+    try:
+        with open(CONFIG_FILE) as f:
+            gb = json.load(f).get("usb_drive_gb")
+    except (OSError, ValueError):
+        return DISK_BYTES
+    if gb is None:
+        return DISK_BYTES
+    if not isinstance(gb, (int, float)) or not DISK_GB_RANGE[0] <= gb <= DISK_GB_RANGE[1]:
+        logger.info(f"usb_drive_gb in config.json must be from {DISK_GB_RANGE[0]} to {DISK_GB_RANGE[1]}. Using 4")
+        return DISK_BYTES
+    return int(gb * 1024 ** 3) // (1024 * 1024) * (1024 * 1024)
+
+
 def main():
     from config.constants import load_program_folder, load_program_upload
     handler = TimedRotatingFileHandler("logs/usb_drive.log", when="midnight", backupCount=200)
@@ -730,7 +750,10 @@ def main():
     folder = load_program_folder()
     if not folder:
         logger.info("No program folder, so LOCAL is empty. usb_drive_setup.sh makes /home/emec/haas-programs.")
-    drive = UsbDrive(folder, RUN_STATE_FILE)
+    size = disk_bytes()
+    if size != DISK_BYTES:
+        logger.info(f"The drive is {size / 1024 ** 3:g} GiB")
+    drive = UsbDrive(folder, RUN_STATE_FILE, size)
     signal.signal(signal.SIGTERM, drive.stop)
     signal.signal(signal.SIGINT, drive.stop)
     try:
