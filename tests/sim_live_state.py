@@ -61,6 +61,9 @@ check("classic alarm has no name", d["state"] == "Alarm" and d["alarm"] == {"cod
 d = snapshot(IDLE, dict(MTC, MachineCondition=("Fault", "1022", "SPINDLE NOT TURNING AT CORRECT SPEED"),
                         ActiveAlarms=""))
 check("NGC alarm name", d["state"] == "Alarm" and d["alarm"] == {"code": "1022", "text": "SPINDLE NOT TURNING AT CORRECT SPEED"})
+FAULT = dict(MTC, MachineCondition=("Fault", "", ""), ActiveAlarms="")
+d = snapshot(IDLE, dict(FAULT, EmergencyStop="TRIGGERED"))
+check("NGC e-stop named", d["alarm"] == {"code": "", "text": "E-stop"})
 d = snapshot(dict(IDLE, **{"Q600 11067": "MACRO, 1.0"}), MTC)
 check("left door open", d["door_open"] is True)
 
@@ -201,6 +204,14 @@ clock[0] += timedelta(seconds=4)
 faulty.read()
 faulty.read()
 check("low air held 5 s is one event", [m for m, c in logged if c == "cnc_input"] == ["[HAAS] Low air."])
+
+# The TM-1P on 2026-10-24: e-stop released 2 min before the reset.
+ngc = LiveState("tm-test", Monitor())
+ngc.monitor.values = IDLE
+for mtc in (dict(FAULT, EmergencyStop="TRIGGERED"), FAULT, MTC, FAULT):
+    ngc.monitor.mtc = mtc
+    ngc.read()
+check("one event per NGC alarm", [m for m, c in logged if c == "cnc_alarm"] == ["[HAAS] Alarm E-stop.", "[HAAS] Alarm."])
 
 # What the USB drive service goes by, in data/run_state and data/run_program
 import tempfile  # noqa: E402

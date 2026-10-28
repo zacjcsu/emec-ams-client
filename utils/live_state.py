@@ -104,6 +104,8 @@ def snapshot(values, mtc, lathe=False, now=None):
         code, text = (condition[1], condition[2]) if isinstance(condition, tuple) else ("", "")
         if active and active != "NO ACTIVE ALARMS":
             text = text or active
+        if not text and mtc.get("EmergencyStop") == "TRIGGERED":
+            text = FAULT_NAMES["estop"]   # the TM-1P's software gives a Fault no text or code
         alarm = {"code": code, "text": text}
     faults = [name for name, (var, bad) in CLASSIC_FAULTS.items() if _macro(values, var) == bad]
     if alarm and not alarm["text"] and faults:
@@ -235,9 +237,10 @@ class LiveState:
             del self._fault_since[fault]
         alarm = data.get("alarm")
         if alarm != self._alarm:
+            named = self._alarm and (self._alarm["code"] or self._alarm["text"])
             self._alarm = alarm
-            if alarm:
-                name = " ".join(x for x in (alarm["code"], alarm["text"]) if x)
+            name = alarm and " ".join(x for x in (alarm["code"], alarm["text"]) if x)
+            if alarm and (name or not named):   # not again when an e-stop is released before the reset
                 logger.info(f"[HAAS] Alarm{' ' + name if name else ''}.", extra={"code": "cnc_alarm"})
         return connected, data
 
