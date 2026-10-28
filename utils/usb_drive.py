@@ -55,6 +55,9 @@ STICK_DIR = "/run/emec-usb-drive/stick"
 GADGET = "/sys/kernel/config/usb_gadget/emec"
 NBD_DEVICE = "/dev/nbd0"
 RUN_STATE_FILE = "data/run_state"   # written by utils/live_state.py
+RUN_PROGRAM_FILE = "data/run_program"   # the program it last saw, written just before the state
+FROM_DRIVE = "O07777"      # the program a classic control reports while one from the drive is open
+RESTART_IDLE_SECONDS = 15 * 60   # new code waits for this much idle in a row
 CONFIG_FILE = "config/config.json"
 STICK_DELAY = "/sys/module/usb_storage/parameters/delay_use"
 
@@ -617,24 +620,40 @@ def _code_stamp():
     return tuple(out)
 
 
-def machine_running(run_state_file, now=None):
-    """Whether the control is anything but idle or off. An unknown state counts as idle."""
+def run_state(run_state_file, now=None):
+    """The control's state, or "" if unknown."""
     try:
         if (now or time.time()) - os.stat(run_state_file).st_mtime > RUN_STATE_MAX_AGE:
-            return False
+            return ""
         with open(run_state_file) as f:
-            state = f.read().strip()
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def machine_running(run_state_file, now=None):
+    """Whether the control is anything but idle or off. An unknown state counts as idle."""
+    return run_state(run_state_file, now) not in ("", "Idle", "Off")
+
+
+def drive_program_open(run_program_file):
+    try:
+        with open(run_program_file) as f:
+            return f.read().strip() == FROM_DRIVE
     except OSError:
         return False
-    return state not in ("", "Idle", "Off")
 
 
 class UsbDrive:
-    def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES, on_read=None):
+    def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES, on_read=None, run_program_file=None,
+                 on_build=None):
         self.program_folder = program_folder
         self.on_read = on_read
+        self.on_build = on_build
         self.disk_bytes = disk_bytes
         self.run_state_file = run_state_file
+        self.run_program_file = run_program_file or os.path.join(os.path.dirname(run_state_file), "run_program")
+        self._idle_since = None
         self.stick = Stick()
         self.volume = None
         self.nbd = NbdDevice(self._read, disk_bytes)
@@ -650,7 +669,15 @@ class UsbDrive:
         volume.on_read = self.on_read
         counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
         logger.info(f"Drive built: {counts}")
+        if self.on_build:
+            usb = next((n for n in volume.root.children if n.name == "USB"), None)
+            self.on_build(None if usb is None else list(_listing(usb)))
         return volume
+
+    def quiet(self):
+        """Whether the stick can be read without slowing the machine down."""
+        return (run_state(self.run_state_file) in ("Idle", "Off")
+                and (self.volume is None or time.monotonic() - self.volume.last_read >= QUIET_SECONDS))
 
     def _signature(self):
         return self.stick.device, signature(self.program_folder)
@@ -669,7 +696,7 @@ class UsbDrive:
         self.gadget.setup()
         self.gadget.attach()
         logger.info("Drive attached")
-        waiting = False
+        waiting = waiting_code = False
         code = _code_stamp()
         while not self._stop.wait(POLL_SECONDS):
             if self.nbd.stopped.is_set():
@@ -677,7 +704,13 @@ class UsbDrive:
                 return True
             self.stick.check()
             current = self._signature()
+            settled = self.settled()
             new_code = _code_stamp() != code
+            if new_code and not settled:
+                if not waiting_code:
+                    logger.info("New code or config. Waiting for the machine to be idle a while first")
+                    waiting_code = True
+                new_code = False
             if (current == shown and not new_code) or time.monotonic() - self.volume.last_read < QUIET_SECONDS:
                 continue
             if machine_running(self.run_state_file):
@@ -709,6 +742,16 @@ class UsbDrive:
             logger.info("Drive plugged in again")
         return False
 
+    def settled(self, now=None):
+        """Whether a restart for new code can't cut anything off. Unlike a change of files, it waits for the
+        control to read Idle, with no drive program open, for RESTART_IDLE_SECONDS in a row."""
+        now = time.monotonic() if now is None else now
+        if run_state(self.run_state_file) != "Idle" or drive_program_open(self.run_program_file):
+            self._idle_since = None
+            return False
+        self._idle_since = self._idle_since or now
+        return now - self._idle_since >= RESTART_IDLE_SECONDS
+
     def stop(self, *_):
         self._stop.set()
 
@@ -718,6 +761,15 @@ class UsbDrive:
                 step()
             except OSError as e:
                 logger.info(f"Shutdown: {e}")
+
+
+def _listing(node, prefix=""):
+    """(name, path, size, mtime, folder) under node, names relative to it."""
+    for c in node.children:
+        name = prefix + c.name
+        yield name, c.path, c.size, c.mtime, c.children is not None
+        if c.children is not None:
+            yield from _listing(c, name + "/")
 
 
 def _files(node):
@@ -751,6 +803,7 @@ def main():
     logging.basicConfig(level=logging.INFO, handlers=[handler, logging.StreamHandler()])
     if load_program_upload() != "usb":
         logger.info('program_upload in config.json isn\'t "usb", so there\'s no drive')
+        drive_reads.forget(MACHINE_ID)
         stamp = _code_stamp()
         while _code_stamp() == stamp:
             time.sleep(5)
@@ -761,9 +814,10 @@ def main():
     size = disk_bytes()
     if size != DISK_BYTES:
         logger.info(f"The drive is {size / 1024 ** 3:g} GiB")
-    reads = drive_reads.ReadReporter(MACHINE_ID)
+    drive = None
+    reads = drive_reads.ReadReporter(MACHINE_ID, can_read=lambda: drive is not None and drive.quiet())
     reads.start()
-    drive = UsbDrive(folder, RUN_STATE_FILE, size, reads.report)
+    drive = UsbDrive(folder, RUN_STATE_FILE, size, reads.report, RUN_PROGRAM_FILE, reads.stick)
     signal.signal(signal.SIGTERM, drive.stop)
     signal.signal(signal.SIGINT, drive.stop)
     try:

@@ -394,6 +394,7 @@ class HaasMonitor:
         self.mode, self.mode_at = None, 0.0   # the last Q104 answer and when
         self.job = None
         self.connected = False
+        self.tried = False            # the first connect, and its first round if it connected, are done
         self._failing = False
         self.tables = TABLES_MILL
         self._tables = []             # (command, logged even if unchanged) still to read in this pass
@@ -624,6 +625,7 @@ class HaasMonitor:
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS
                 else:
                     self._poll_all(self.fast)
+                self.tried = True
                 self._poll_tables()
                 if self.mtconnect:
                     self._mtconnect_changes()
@@ -635,6 +637,7 @@ class HaasMonitor:
                 elif not self._failing:
                     logger.info(f"[HAAS] Cannot reach {self.client.name}: {e}.")
                 self.connected, self._failing = False, True
+                self.tried = True
                 self.values, self.mtc = {}, {}
                 self.client.close()
                 self._stop.wait(SEND_RETRY_SECONDS if self.job else RETRY_SECONDS)

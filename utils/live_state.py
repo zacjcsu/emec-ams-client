@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from db.server_sync import get_server_connection
 from utils.haas_mdc import TABLES_LATHE
 from utils.timeutil import utc_now
-from utils.usb_drive import RUN_STATE_FILE
+from utils.usb_drive import RUN_PROGRAM_FILE, RUN_STATE_FILE, run_state
 
 logger = logging.getLogger("haas")
 
@@ -25,6 +25,8 @@ REFRESH_SECONDS = 30   # written at least this often, so the dashboard can tell 
 # A control stopped at M00 or M01 still says busy. The spindle stops there, and in a tool change for a few seconds.
 STOPPED_AFTER_SECONDS = 60
 STATES = {"IDLE": "Idle", "FEED HOLD": "Feed hold", "ALARM ON": "Alarm"}
+# The USB drive takes a lost link as Off only after this. A classic misses a few answers in a row now and then.
+OFF_AFTER_SECONDS = 120
 # A classic's inputs, named from the 2007 electrical service manual, and the value that means trouble. Regen overheat
 # reads 1 on all three classics with no alarm, so it's taken as active at 0.
 CLASSIC_FAULTS = {"estop": (1007, 1), "low_air": (1011, 1), "low_lube": (1012, 1), "over_voltage": (1010, 1),
@@ -182,7 +184,10 @@ class LiveState:
         self._written_at = 0.0
         self._sent = {}                  # table var -> value last sent
         self._fault_since = {}           # fault -> when it came on
-        self._shared = None              # (state, when) last written to RUN_STATE_FILE
+        self._shared = None              # ((state, program), when) last written for the USB drive
+        self._held = run_state(RUN_STATE_FILE) or None   # what the drive goes by, from before a restart if fresh
+        self._held_program = None
+        self._off_since = None
 
     def start(self):
         self._thread.start()
@@ -211,7 +216,8 @@ class LiveState:
         else:
             self._still_at = None
         state = data.get("state", "Off" if not connected else None)
-        self._share(state)
+        if self.monitor.tried:
+            self._for_drive(state if connected else None, data.get("program"), connected)
         if state and state != self._state:
             at = now
             if state == "Stopped":
@@ -235,16 +241,32 @@ class LiveState:
                 logger.info(f"[HAAS] Alarm{' ' + name if name else ''}.", extra={"code": "cnc_alarm"})
         return connected, data
 
-    def _share(self, state):
+    def _for_drive(self, state, program, connected):
+        """A blank answer keeps the last state, and so does a lost link until OFF_AFTER_SECONDS. Either could
+        otherwise read as idle and let the drive change under a running program."""
+        if connected:
+            self._off_since = None
+            self._held = state or self._held
+            self._held_program = program or self._held_program
+        else:
+            self._off_since = self._off_since or time.monotonic()
+            if time.monotonic() - self._off_since >= OFF_AFTER_SECONDS:
+                self._held, self._held_program = "Off", None
+        if self._held:
+            self._share(self._held, self._held_program)
+
+    def _share(self, state, program):
         """The USB drive service changes the drive only while this says Idle, so a program running from it isn't cut
-        off. It counts the file as unknown once it's older than REFRESH_SECONDS three times over."""
-        if self._shared and self._shared[0] == state and time.monotonic() - self._shared[1] < REFRESH_SECONDS:
+        off. It counts the file as unknown once it's older than REFRESH_SECONDS three times over. The program goes
+        first, so the state's time stands for both."""
+        if self._shared and self._shared[0] == (state, program) and time.monotonic() - self._shared[1] < REFRESH_SECONDS:
             return
         try:
-            with open(RUN_STATE_FILE + ".tmp", "w") as f:
-                f.write(state or "")
-            os.replace(RUN_STATE_FILE + ".tmp", RUN_STATE_FILE)
-            self._shared = (state, time.monotonic())
+            for path, value in ((RUN_PROGRAM_FILE, program), (RUN_STATE_FILE, state)):
+                with open(path + ".tmp", "w") as f:
+                    f.write(value or "")
+                os.replace(path + ".tmp", path)
+            self._shared = ((state, program), time.monotonic())
         except OSError as e:
             if self._shared is not False:
                 logger.info(f"[HAAS] Cannot write {RUN_STATE_FILE}: {e}")

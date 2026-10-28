@@ -103,6 +103,7 @@ check("NGC has no faults list", "faults" not in snapshot(IDLE, MTC))
 class Monitor:
     poll_seconds = 2
     connected = True
+    tried = True
     values = IDLE
     mtc = {}
     tables = ()
@@ -200,5 +201,48 @@ clock[0] += timedelta(seconds=4)
 faulty.read()
 faulty.read()
 check("low air held 5 s is one event", [m for m, c in logged if c == "cnc_input"] == ["[HAAS] Low air."])
+
+# What the USB drive service goes by, in data/run_state and data/run_program
+import tempfile  # noqa: E402
+import time  # noqa: E402
+spot = tempfile.mkdtemp()
+utils.live_state.RUN_STATE_FILE, utils.live_state.RUN_PROGRAM_FILE = f"{spot}/run_state", f"{spot}/run_program"
+
+
+def shared():
+    try:
+        return Path(f"{spot}/run_state").read_text(), Path(f"{spot}/run_program").read_text()
+    except OSError:
+        return None
+
+
+RUNNING = {"Q500": "STATUS, BUSY"}
+starting = Monitor()
+starting.connected, starting.tried, starting.values = False, False, {}
+drive = LiveState("tm-test", starting)
+drive.read()
+check("nothing for the drive before the first connect is tried", shared() is None)
+starting.connected, starting.tried, starting.values = True, True, dict(IDLE)
+drive.read()
+check("idle for the drive with its program", shared() == ("Idle", IDLE["Q500"].split(",")[1].strip()))
+starting.values = RUNNING
+drive.read()
+check("running", shared()[0] == "Running")
+starting.values = {}
+drive.read()
+check("a blank answer keeps running", shared()[0] == "Running")
+starting.connected = False
+drive.read()
+check("a lost link keeps running at first", shared()[0] == "Running")
+real = time.monotonic
+time.monotonic = lambda: real() + utils.live_state.OFF_AFTER_SECONDS + 1
+drive.read()
+check("and is Off after a while", shared() == ("Off", ""))
+time.monotonic = real
+Path(f"{spot}/run_state").write_text("Feed hold")
+again = Monitor()
+again.connected, again.tried, again.values = False, True, {}
+LiveState("tm-test", again).read()
+check("after a restart a fresh feed hold stays until the control answers", shared()[0] == "Feed hold")
 
 sys.exit(1 if fails else 0)

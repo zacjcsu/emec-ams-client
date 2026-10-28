@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import usb_drive as u  # noqa: E402
@@ -107,6 +108,36 @@ sig = u.signature(pi)
 with open(f"{pi}/O01001.NC", "wb") as f:
     f.write(b"%\n%\n")
 check("a new program changes the signature", u.signature(pi) != sig)
+
+# A restart for new code waits for the control to sit idle with no drive program open
+state, program = f"{tmp}/run_state", f"{tmp}/run_program"
+d = u.UsbDrive(pi, state, run_program_file=program)
+
+
+def control(s, p=""):
+    with open(state, "w") as f:
+        f.write(s)
+    with open(program, "w") as f:
+        f.write(p)
+
+
+control("Idle", "O01001")
+check("idle just now isn't settled", not d.settled(now=1000))
+check("idle 15 minutes is", d.settled(now=1000 + u.RESTART_IDLE_SECONDS))
+for s, p, why in (("Feed hold", "O07777", "feed hold"), ("Off", "", "off"), ("", "", "unknown"),
+                  ("Idle", u.FROM_DRIVE, "a drive program open")):
+    control(s, p)
+    check(f"{why} isn't settled", not d.settled(now=5000))
+    control("Idle", "O01001")
+    check(f"and idle starts over after {why}", not d.settled(now=5001) and d.settled(now=5001 + u.RESTART_IDLE_SECONDS))
+    d._idle_since = None
+control("Idle", "O01001")
+os.utime(state, (time.time() - u.RUN_STATE_MAX_AGE - 1,) * 2)
+check("a stale idle isn't settled", not d.settled(now=9000))
+control("Feed hold")
+check("files still wait while running", u.machine_running(state))
+control("Off")
+check("files can change with the control off", not u.machine_running(state))
 
 shutil.rmtree(tmp)
 print(f"{failed} failed" if failed else "all passed")
