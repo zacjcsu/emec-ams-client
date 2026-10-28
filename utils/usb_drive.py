@@ -12,8 +12,9 @@ keeps showing the old folders with no signal, and handles a medium swap badly. A
 QUIET_SECONDS. Until then a file that's gone, like one on a pulled flash drive, answers with a read error.
 
 It needs root for the gadget (configfs), the block device (/dev/nbd0) and mounting the flash drive, so it runs as its
-own service. usb_drive_setup.sh installs it. Each file the machine reads is logged to logs/usb_drive.log. When this
-file changes, it starts itself again once the drive could change, so new code needs no sudo.
+own service. usb_drive_setup.sh installs it. Each file the machine reads is logged to logs/usb_drive.log, and sent to
+the dashboard by utils/drive_reads.py. When either file changes, it starts itself again once the drive could change,
+so new code needs no sudo.
 Run it with: sudo .venv/bin/python -m utils.usb_drive
 """
 import bisect
@@ -29,6 +30,8 @@ import sys
 import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
+
+from utils import drive_reads
 
 logger = logging.getLogger("usb_drive")
 
@@ -205,6 +208,7 @@ class Volume:
         self._files = {}           # path: fd, the last few read
         self._logged = {}          # shown path: when its read was logged
         self.last_read = 0.0
+        self.on_read = None        # called with the shown path and the file's path as each logged read starts
 
     def _name(self, folder, shown):
         used = set()
@@ -345,6 +349,8 @@ class Volume:
         now = time.monotonic()
         if now - self._logged.get(node.shown, -READ_LOG_SECONDS) >= READ_LOG_SECONDS:
             logger.info(f"Read {node.shown}")
+            if self.on_read:
+                self.on_read(node.shown, node.path)
         self._logged[node.shown] = now
 
     def sector(self, n):
@@ -600,9 +606,9 @@ class Stick:
 
 
 def _code_stamp():
-    """Changes with this file or config.json."""
+    """Changes with this file, utils/drive_reads.py or config.json."""
     out = []
-    for path in (__file__, CONFIG_FILE):
+    for path in (__file__, drive_reads.__file__, CONFIG_FILE):
         try:
             st = os.stat(path)
             out.append((st.st_mtime_ns, st.st_size))
@@ -624,8 +630,9 @@ def machine_running(run_state_file, now=None):
 
 
 class UsbDrive:
-    def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES):
+    def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES, on_read=None):
         self.program_folder = program_folder
+        self.on_read = on_read
         self.disk_bytes = disk_bytes
         self.run_state_file = run_state_file
         self.stick = Stick()
@@ -640,6 +647,7 @@ class UsbDrive:
     def _build(self):
         folders = [("LOCAL", self.program_folder)] + ([("USB", self.stick.path)] if self.stick.path else [])
         volume = Volume(folders, disk_bytes=self.disk_bytes)
+        volume.on_read = self.on_read
         counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
         logger.info(f"Drive built: {counts}")
         return volume
@@ -737,7 +745,7 @@ def disk_bytes():
 
 
 def main():
-    from config.constants import load_program_folder, load_program_upload
+    from config.constants import MACHINE_ID, load_program_folder, load_program_upload
     handler = TimedRotatingFileHandler("logs/usb_drive.log", when="midnight", backupCount=200)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     logging.basicConfig(level=logging.INFO, handlers=[handler, logging.StreamHandler()])
@@ -753,7 +761,9 @@ def main():
     size = disk_bytes()
     if size != DISK_BYTES:
         logger.info(f"The drive is {size / 1024 ** 3:g} GiB")
-    drive = UsbDrive(folder, RUN_STATE_FILE, size)
+    reads = drive_reads.ReadReporter(MACHINE_ID)
+    reads.start()
+    drive = UsbDrive(folder, RUN_STATE_FILE, size, reads.report)
     signal.signal(signal.SIGTERM, drive.stop)
     signal.signal(signal.SIGINT, drive.stop)
     try:
