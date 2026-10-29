@@ -646,8 +646,9 @@ def drive_program_open(run_program_file):
 
 class UsbDrive:
     def __init__(self, program_folder, run_state_file, disk_bytes=DISK_BYTES, on_read=None, run_program_file=None,
-                 on_build=None):
+                 on_build=None, control=True):
         self.program_folder = program_folder
+        self.control = control   # whether a control is configured to write the run state
         self.on_read = on_read
         self.on_build = on_build
         self.disk_bytes = disk_bytes
@@ -744,7 +745,10 @@ class UsbDrive:
 
     def settled(self, now=None):
         """Whether a restart for new code can't cut anything off. Unlike a change of files, it waits for the
-        control to read Idle, with no drive program open, for RESTART_IDLE_SECONDS in a row."""
+        control to read Idle, with no drive program open, for RESTART_IDLE_SECONDS in a row. A Pi with no control
+        configured has no state to wait for."""
+        if not self.control:
+            return True
         now = time.monotonic() if now is None else now
         if run_state(self.run_state_file) != "Idle" or drive_program_open(self.run_program_file):
             self._idle_since = None
@@ -797,7 +801,7 @@ def disk_bytes():
 
 
 def main():
-    from config.constants import MACHINE_ID, load_program_folder, load_program_upload
+    from config.constants import MACHINE_DATA, MACHINE_ID, load_program_folder, load_program_upload
     handler = TimedRotatingFileHandler("logs/usb_drive.log", when="midnight", backupCount=200)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     logging.basicConfig(level=logging.INFO, handlers=[handler, logging.StreamHandler()])
@@ -817,7 +821,8 @@ def main():
     drive = None
     reads = drive_reads.ReadReporter(MACHINE_ID, can_read=lambda: drive is not None and drive.quiet())
     reads.start()
-    drive = UsbDrive(folder, RUN_STATE_FILE, size, reads.report, RUN_PROGRAM_FILE, reads.stick)
+    drive = UsbDrive(folder, RUN_STATE_FILE, size, reads.report, RUN_PROGRAM_FILE, reads.stick,
+                     control=bool((MACHINE_DATA or {}).get("control")))
     signal.signal(signal.SIGTERM, drive.stop)
     signal.signal(signal.SIGINT, drive.stop)
     try:

@@ -134,6 +134,7 @@ for s, p, why in (("Feed hold", "O07777", "feed hold"), ("Off", "", "off"), ("",
 control("Idle", "O01001")
 os.utime(state, (time.time() - u.RUN_STATE_MAX_AGE - 1,) * 2)
 check("a stale idle isn't settled", not d.settled(now=9000))
+check("with no control configured, a restart doesn't wait", u.UsbDrive(pi, state, run_program_file=program, control=False).settled(now=9000))
 control("Feed hold")
 check("files still wait while running", u.machine_running(state))
 control("Off")
