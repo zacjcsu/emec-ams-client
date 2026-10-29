@@ -8,8 +8,12 @@ when the machine asks for them. Nothing is copied. Writes are refused, so the ma
 
 A change to either folder rebuilds the drive, and the machine sees it unplugged and plugged back in. A classic Haas
 keeps showing the old folders with no signal, and handles a medium swap badly. A program can run straight off the drive
-(FNC), so that waits until the control is idle, as the app writes to RUN_STATE_FILE, and has read nothing for
-QUIET_SECONDS. Until then a file that's gone, like one on a pulled flash drive, answers with a read error.
+(FNC), and a replug drops it even while it's only open. So a change waits until the control is idle with no program
+from the drive open, as the app writes to RUN_STATE_FILE and RUN_PROGRAM_FILE, and has read nothing for QUIET_SECONDS.
+
+Until then the drive shows each file as it was when built. A file the machine has started reading stays open, so a new
+upload, a delete or a probation session hiding it doesn't change what the machine reads. A file that changed before the
+machine opened it answers with a read error, and so does one that's gone, like one on a pulled flash drive.
 
 It needs root for the gadget (configfs), the block device (/dev/nbd0) and mounting the flash drive, so it runs as its
 own service. usb_drive_setup.sh installs it. Each file the machine reads is logged to logs/usb_drive.log, and sent to
@@ -58,6 +62,7 @@ RUN_STATE_FILE = "data/run_state"   # written by utils/live_state.py
 RUN_PROGRAM_FILE = "data/run_program"   # the program it last saw, written just before the state
 FROM_DRIVE = "O07777"      # the program a classic control reports while one from the drive is open
 RESTART_IDLE_SECONDS = 15 * 60   # new code waits for this much idle in a row
+MAX_OPEN = 256             # files kept open until the next replug
 CONFIG_FILE = "config/config.json"
 STICK_DELAY = "/sys/module/usb_storage/parameters/delay_use"
 
@@ -76,8 +81,9 @@ _SHORT_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()-@^_`{}~")
 class Node:
     """A file, or a folder when children isn't None. path is where its bytes come from."""
 
-    def __init__(self, name, path=None, size=0, mtime=0.0, children=None):
+    def __init__(self, name, path=None, size=0, mtime=0.0, children=None, stamp=None):
         self.name, self.path, self.size, self.mtime, self.children = name, path, size, mtime, children
+        self.stamp = stamp      # (device, inode, size, mtime_ns) of a file when scanned
         self.short = b""
         self.lfn = False        # needs a long name entry
         self.first = 0          # first cluster, 0 for an empty file
@@ -109,7 +115,8 @@ def scan(folder, depth=0, budget=None):
                     out.append(Node(e.name, e.path, mtime=st.st_mtime, children=scan(e.path, depth + 1, budget)))
             elif e.is_file() and st.st_size < 2 ** 32:
                 budget[0] -= 1
-                out.append(Node(e.name, e.path, st.st_size, st.st_mtime))
+                out.append(Node(e.name, e.path, st.st_size, st.st_mtime,
+                                stamp=(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)))
         except OSError:
             continue
     return out
@@ -208,9 +215,10 @@ class Volume:
                                        for name, path in folders])
         self._name(self.root, "")
         self._allocate()
-        self._files = {}           # path: fd, the last few read
+        self._files = {}           # path: fd of each file read, kept open until the drive is rebuilt
         self._logged = {}          # shown path: when its read was logged
         self.last_read = 0.0
+        self._names = None
         self.on_read = None        # called with the shown path and the file's path as each logged read starts
 
     def _name(self, folder, shown):
@@ -336,17 +344,25 @@ class Volume:
         return struct.pack("<128I", *out)
 
     def _file(self, node, offset, length):
+        """The file's bytes as they were when the drive was built. Once open it stays open, so replacing, moving or
+        deleting it on the Pi doesn't change what the machine reads."""
         fd = self._files.get(node.path)
-        try:
-            if fd is None:
-                if len(self._files) >= 4:
-                    os.close(self._files.pop(next(iter(self._files))))
-                fd = self._files[node.path] = os.open(node.path, os.O_RDONLY)
-            data = os.pread(fd, length, offset)
-        except OSError:
-            self._files.pop(node.path, None)
-            raise
-        return data.ljust(length, b"\x00")
+        if fd is None:
+            fd = os.open(node.path, os.O_RDONLY)
+            st = os.fstat(fd)
+            if node.stamp and (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != node.stamp:
+                os.close(fd)
+                raise OSError(EIO, f"{node.shown} changed since the drive was built")
+            if len(self._files) >= MAX_OPEN:
+                os.close(self._files.pop(next(iter(self._files))))
+            self._files[node.path] = fd
+        return os.pread(fd, length, offset).ljust(length, b"\x00")
+
+    def has_file(self, name):
+        """Whether a file of this name is anywhere on the drive. Case doesn't matter."""
+        if self._names is None:
+            self._names = {n.name.casefold() for n in _files(self.root)}
+        return name.casefold() in self._names
 
     def _logged_read(self, node):
         now = time.monotonic()
@@ -636,12 +652,13 @@ def machine_running(run_state_file, now=None):
     return run_state(run_state_file, now) not in ("", "Idle", "Off")
 
 
-def drive_program_open(run_program_file):
+def open_program(run_program_file):
+    """The program the control has open, as the app last saw it, or "" if unknown."""
     try:
         with open(run_program_file) as f:
-            return f.read().strip() == FROM_DRIVE
+            return f.read().strip()
     except OSError:
-        return False
+        return ""
 
 
 class UsbDrive:
@@ -714,9 +731,9 @@ class UsbDrive:
                 new_code = False
             if (current == shown and not new_code) or time.monotonic() - self.volume.last_read < QUIET_SECONDS:
                 continue
-            if machine_running(self.run_state_file):
+            if self.in_use():
                 if not waiting:
-                    logger.info("Waiting for the machine to be idle before changing the drive")
+                    logger.info("Waiting for the machine to be idle with nothing from the drive open")
                     waiting = True
                 continue
             waiting = False
@@ -743,14 +760,29 @@ class UsbDrive:
             logger.info("Drive plugged in again")
         return False
 
+    def in_use(self):
+        """Whether the control may be using a file on the drive: anything but idle or off, or idle with a program
+        from the drive open. A classic names that O07777. An NGC names the file, so any file of that name on the drive
+        counts. An unknown state doesn't hold, since the app isn't running to tell."""
+        state = run_state(self.run_state_file)
+        if state in ("", "Off"):
+            return False
+        if state != "Idle":
+            return True
+        program = open_program(self.run_program_file)
+        if program == FROM_DRIVE:
+            return True
+        name = program.replace("\\", "/").rsplit("/", 1)[-1]
+        return bool(name) and self.volume is not None and self.volume.has_file(name)
+
     def settled(self, now=None):
         """Whether a restart for new code can't cut anything off. Unlike a change of files, it waits for the
-        control to read Idle, with no drive program open, for RESTART_IDLE_SECONDS in a row. A Pi with no control
-        configured has no state to wait for."""
+        control to read Idle, with nothing from the drive open, for RESTART_IDLE_SECONDS in a row. A Pi with no
+        control configured has no state to wait for."""
         if not self.control:
             return True
         now = time.monotonic() if now is None else now
-        if run_state(self.run_state_file) != "Idle" or drive_program_open(self.run_program_file):
+        if run_state(self.run_state_file) != "Idle" or self.in_use():
             self._idle_since = None
             return False
         self._idle_since = self._idle_since or now

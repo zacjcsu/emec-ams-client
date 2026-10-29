@@ -135,10 +135,48 @@ control("Idle", "O01001")
 os.utime(state, (time.time() - u.RUN_STATE_MAX_AGE - 1,) * 2)
 check("a stale idle isn't settled", not d.settled(now=9000))
 check("with no control configured, a restart doesn't wait", u.UsbDrive(pi, state, run_program_file=program, control=False).settled(now=9000))
-control("Feed hold")
-check("files still wait while running", u.machine_running(state))
-control("Off")
-check("files can change with the control off", not u.machine_running(state))
+# A change of files waits while the control may be using a file on the drive
+d.volume = u.Volume([("LOCAL", pi)], disk_bytes=48 * 1024 * 1024, cluster_sectors=1)
+for s, p, held, why in (("Feed hold", "O01001", True, "running"),
+                        ("Idle", u.FROM_DRIVE, True, "a classic with a drive program open"),
+                        ("Idle", "Operation 1.nc", True, "an NGC with a drive file open"),
+                        ("Idle", "OPERATION 1.NC", True, "in any case"),
+                        ("Idle", "O01001", False, "idle with a memory program"),
+                        ("Idle", "", False, "idle with nothing open"),
+                        ("Off", u.FROM_DRIVE, False, "off"),
+                        ("", u.FROM_DRIVE, False, "unknown")):
+    control(s, p)
+    check(f"{why}: {'waits' if held else 'can change'}", d.in_use() == held)
+
+# The drive keeps giving a file the bytes it had when built
+keep = f"{pi}/Keep.nc"
+for path, data in ((keep, b"G1 X1\n" * 200), (f"{pi}/Late.nc", b"G1 Y1\n" * 200)):
+    with open(path, "wb") as f:
+        f.write(data)
+v = u.Volume([("LOCAL", pi)], disk_bytes=48 * 1024 * 1024, cluster_sectors=1)
+
+
+def file_bytes(vol, name):
+    n = next(c for c in vol.root.children[0].children if c.name == name)
+    return vol.read((vol.data_start + (n.first - 2) * vol.spc) * 512, n.size)
+
+
+old = file_bytes(v, "Keep.nc")
+check("a file reads as written", old == b"G1 X1\n" * 200)
+with open(f"{pi}/.Keep.nc.part", "wb") as f:
+    f.write(b"G1 X2\n" * 300)
+os.replace(f"{pi}/.Keep.nc.part", keep)
+check("replaced on the Pi, the machine still gets the old bytes", file_bytes(v, "Keep.nc") == old)
+os.remove(keep)
+check("and after it's deleted", file_bytes(v, "Keep.nc") == old)
+with open(f"{pi}/Late.nc", "wb") as f:
+    f.write(b"G1 Y2\n" * 300)
+try:
+    file_bytes(v, "Late.nc")
+    check("a file changed before the machine opened it is a read error", False)
+except OSError:
+    check("a file changed before the machine opened it is a read error", True)
+v.close()
 
 shutil.rmtree(tmp)
 print(f"{failed} failed" if failed else "all passed")
