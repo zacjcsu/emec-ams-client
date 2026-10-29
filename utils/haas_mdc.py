@@ -35,6 +35,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from logging.handlers import TimedRotatingFileHandler
 
+from config.constants import MACHINE_ID, MACHINE_TYPE
+
 logger = logging.getLogger("haas")
 
 # Polled every poll_seconds: program, state and parts; mode; tool in the spindle; spindle RPM and load;
@@ -88,6 +90,20 @@ _REST = (*range(100, 200), *range(500, 700), *range(5001, 5007), *range(5021, 50
          *range(7001, 7007), *range(7021, 7027))
 
 
+def machine_is_lathe():
+    """The machine is in the CNC lathe category on the dashboard, as last synced. config.json's category can be stale:
+    the setup script can't make a category, and the dashboard doesn't update it."""
+    from db.server_sync import _local   # not at the top, so the readers load without a database
+    try:
+        with _local() as conn:
+            row = conn.execute("SELECT machine_type FROM Machine WHERE machine_id = ?", (MACHINE_ID,)).fetchone()
+        if row and row["machine_type"]:
+            return row["machine_type"] == LATHE_CATEGORY
+    except Exception as e:
+        logger.info(f"[HAAS] Cannot read the machine's category, so using config.json's: {e}")
+    return MACHINE_TYPE == LATHE_CATEGORY
+
+
 def _tables(offsets, tools):
     first = [base + tool for base in (*offsets, *_TOOL_DATA) for tool in range(1, 21)]
     rest = [base + tool for base in offsets for tool in range(21, tools + 1)]
@@ -97,7 +113,7 @@ def _tables(offsets, tools):
 
 TABLES_MILL = _tables((2000, 2200, 2400, 2600), 200)
 TABLES_LATHE = _tables((2000, 2100, 2200, 2300, 2700, 2800, 2900), 50)
-LATHE_MODEL = re.compile(r"MODEL,\s*(TL|SL|ST|DS|GT|OL)")
+LATHE_CATEGORY = "cnc-lathe"
 TABLES_PER_ROUND = 8
 TABLES_SNAPSHOT_SECONDS = 3600
 # Asked once per connect, to see what answers. Unknown commands get "UNKNOWN".
@@ -397,6 +413,7 @@ class HaasMonitor:
         self.tried = False            # the first connect, and its first round if it connected, are done
         self._failing = False
         self.tables = TABLES_MILL
+        self.lathe = machine_is_lathe   # picks the lathe's offsets
         self._tables = []             # (command, logged even if unchanged) still to read in this pass
         self._tables_snapshot_at = 0.0
         self._silent = set()          # table commands the control didn't answer since connecting
@@ -618,8 +635,7 @@ class HaasMonitor:
                     self._mtc_next = None
                     snapshot_at = 0.0
                     self._tables, self._tables_snapshot_at, self._silent = [], 0.0, set()
-                    lathe = LATHE_MODEL.match(clean(self.client.ask("Q102")))
-                    self.tables = TABLES_LATHE if lathe else TABLES_MILL
+                    self.tables = TABLES_LATHE if self.lathe() else TABLES_MILL
                 if time.monotonic() >= snapshot_at:
                     self._poll_all(self.fast + SLOW, always=True)
                     snapshot_at = time.monotonic() + SNAPSHOT_SECONDS

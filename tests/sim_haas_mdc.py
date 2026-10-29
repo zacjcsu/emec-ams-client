@@ -109,6 +109,7 @@ check("framing is cleaned", haas_mdc.clean(b"\x02PROGRAM, O00001, IDLE, PARTS, 3
       "PROGRAM, O00001, IDLE, PARTS, 380")
 
 mon = haas_mdc.HaasMonitor.ngc("127.0.0.1", control.port, poll_seconds=0.1)
+mon.lathe = lambda: False
 mon.start()
 
 
@@ -237,6 +238,7 @@ def log():
 port = haas_mdc.SerialClient(classic.device, baud=38400, parity="even", data_bits=7)
 check("classic: 7E1 flags", port.cflag == termios.CS7 | termios.PARENB and port.speed == termios.B38400)
 mon = haas_mdc.HaasMonitor.classic(classic.device, poll_seconds=0.1)
+mon.lathe = lambda: False
 mon.start()
 
 time.sleep(7)
@@ -280,13 +282,13 @@ STATE["Q600 2004"] = "MACRO, 2004,      -5.123400"
 check("classic: reads the tool offsets a few at a time",
       wait_for(lambda: mon.values.get("Q600 2004") == STATE["Q600 2004"] and "Q600 5720" in mon.values, 90)
       and "Q600 5720 = 'MACRO, 5720, INVALID'  raw=b'\\x02MACRO, 5720, INVALID\\x17'  (snapshot)" in log())
-check("classic: a lathe gets the lathe's offsets", haas_mdc.LATHE_MODEL.match("MODEL, TL1")
-      and haas_mdc.LATHE_MODEL.match("MODEL,ST10") and not haas_mdc.LATHE_MODEL.match("MODEL, TM3P")
-      and mon.tables is haas_mdc.TABLES_MILL)
+check("classic: a mill gets the mill's offsets", mon.tables is haas_mdc.TABLES_MILL)
+mon.lathe = lambda: True
 classic.off.set()
 check("classic: switched off is noticed", wait_for(lambda: "disconnected: no answer" in log(), OFF_NOTICED))
 classic.off.clear()
 check("classic: reconnects", wait_for(lambda: log().count("connected to") >= 2 and mon.connected, 20))
+check("classic: a lathe gets the lathe's offsets", mon.tables is haas_mdc.TABLES_LATHE)
 
 check("haas_text adds the % lines and CR LF", haas_mdc.haas_text(b"O1 (A)\nM30\n\n") == b"%\r\nO1 (A)\r\nM30\r\n%\r\n")
 check("haas_text keeps a program's own % lines", haas_mdc.haas_text(b"%\r\nO1\r\n%\r\n") == b"%\r\nO1\r\n%\r\n")
@@ -334,6 +336,7 @@ mon._thread.join(20)
 mon.client.close()
 
 mon = haas_mdc.HaasMonitor.classic(classic.device, poll_seconds=1.5)
+mon.lathe = lambda: False
 asked = []
 ask = mon.client.ask
 mon.client.ask = lambda command: asked.append(command) or ask(command)
