@@ -100,6 +100,8 @@ else:
     power = None
 flow = ScanFlow(reader, db, lcd, activity)
 session_mgr = SessionManager(db, lcd, relay, lockout, hold_card=flow.hold_after_hours)
+if programs:
+    programs.session = lambda: session_mgr.active_csu_id if session_mgr.active_session_id else None
 
 def exit_handler(sig, frame):
     # De-energise first: everything below can raise, and the machine must not

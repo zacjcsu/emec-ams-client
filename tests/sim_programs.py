@@ -30,6 +30,7 @@ class FakeServer:
         self.share = {}
         self.writes = 0   # to cnc_share_files
         self.next_id = 1
+        self.probation = None   # what visible_programs() gives a session on probation, or None for a session that isn't
 
     def upload(self, name, text):
         parts = name.split("/")
@@ -45,6 +46,12 @@ class FakeServer:
     def execute(self, sql, params):
         rows = list(self.programs.values())
         sql = sql.strip()
+        if sql.startswith("SELECT stick_allowed"):
+            result = {"ok": self.probation is None}
+            return type("Cursor", (), {"fetchone": lambda self: result})()
+        if sql.startswith("SELECT visible_programs"):
+            result = {"ids": self.probation}
+            return type("Cursor", (), {"fetchone": lambda self: result})()
         if "cnc_share_files" in sql:
             result = []
             if sql.startswith("SELECT name, folder, sha256"):
@@ -208,6 +215,81 @@ check("a folder saved into after the delete stays", "Saved" in files() and not s
 os.remove(os.path.join(folder, "Job 3"))
 sync.sync(server)
 check("one removed at the control drops off the list", "Job 3" not in listed())
+
+# Probation. The share shows only the session's own and assigned programs.
+folder = os.path.join(work, "share2")
+os.makedirs(folder)
+server = FakeServer()
+sync = ProgramSync("zz_test", folder=folder, manifest=os.path.join(work, "programs2.json"))
+hidden = sync.hidden
+
+
+def tree(top):
+    return sorted(os.path.relpath(os.path.join(r, n), top).replace(os.sep, "/") + ("/" if n in d else "")
+                  for r, d, f in os.walk(top) for n in d + f if not n.startswith("."))
+
+
+for name in ("Staff/Op 1.nc", "Staff/Op 2.nc", "Mine/part.nc", "top.nc", "Staff2/x.nc"):
+    server.upload(name, f"({name})\nM30\n%\n")
+server.folders.add("Empty")
+ids = {name: p["id"] for name, p in server.programs.items()}
+sync.sync(server)
+open(os.path.join(folder, "HAAS.nc"), "w").write("saved on the control\n")
+open(os.path.join(folder, "Staff", "HAAS2.nc"), "w").write("saved on the control\n")
+os.makedirs(os.path.join(folder, "Saved"))
+open(os.path.join(folder, "Saved", "HAAS3.nc"), "w").write("saved on the control\n")
+sync.sync(server)
+everything = tree(folder)
+check("no session shows everything", "top.nc" in everything and "Staff/HAAS2.nc" in everything)
+
+sync.session = lambda: "zz_test_1"
+server.probation = [ids["Mine/part.nc"], ids["Staff/Op 2.nc"]]
+sync.sync(server)
+check("a probation session shows its own and assigned files, and folders with none in them",
+      tree(folder) == ["Empty/", "Mine/", "Mine/part.nc", "Staff/", "Staff/Op 2.nc"])
+check("the rest are hidden", {"top.nc", "Staff/Op 1.nc", "Staff2/x.nc", "HAAS.nc", "Staff/HAAS2.nc", "Saved/HAAS3.nc"}
+      <= set(tree(hidden)))
+check("what the control saved is still listed", {"HAAS.nc", "Staff/HAAS2.nc", "Saved/HAAS3.nc"} <= set(listed()))
+
+open(os.path.join(folder, "NEW.nc"), "w").write("saved during the session\n")
+server.upload("late.nc", "(late)\nM30\n%\n")
+ids["late.nc"] = server.programs["late.nc"]["id"]
+sync.sync(server)
+check("what the control saves during the session stays", "NEW.nc" in tree(folder))
+check("an upload during the session goes hidden", "late.nc" not in tree(folder) and "late.nc" in tree(hidden)
+      and server.programs["late.nc"]["synced"])
+
+server.probation = server.probation + [ids["top.nc"]]
+sync.sync(server)
+check("a file assigned during the session shows", "top.nc" in tree(folder) and "top.nc" not in tree(hidden))
+del server.programs["Staff/Op 1.nc"]
+sync.sync(server)
+check("a hidden file deleted on the dashboard goes", "Staff/Op 1.nc" not in tree(hidden))
+
+sync.session = lambda: None
+sync.sync(server)
+check("everything comes back after the session", tree(folder) == sorted(set(everything) - {"Staff/Op 1.nc"}
+                                                                          | {"NEW.nc", "late.nc"})
+      and not [n for n in tree(hidden) if not n.endswith("/")] and not os.path.exists(sync.marker))
+
+sync.session = lambda: "zz_test_2"
+server.probation = [ids["Mine/part.nc"]]
+sync.sync(server)
+check("the next student's session hides what the control saved in the last one", "NEW.nc" not in tree(folder))
+open(os.path.join(folder, "Mine", "part.nc"), "w").write("edited on the control\n")
+open(os.path.join(hidden, "late.nc"), "a").write("(edited)\n")
+sync.session = lambda: None
+open(os.path.join(folder, "late.nc"), "w").write("saved on the control with the same name\n")
+sync.sync(server)
+check("a hidden file whose name the control took stays hidden", "late.nc" in tree(hidden)
+      and "same name" in read("late.nc"))
+check("an edit at the control during the session is kept", "edited on the control" in read("Mine/part.nc"))
+
+os.remove(os.path.join(folder, "late.nc"))
+server.probation = None
+sync.session = lambda: "zz_test_3"
+sync.sync(server)
+check("a session not on probation shows everything", "top.nc" in tree(folder) and "late.nc" in tree(folder))
 
 print("all passed" if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)
