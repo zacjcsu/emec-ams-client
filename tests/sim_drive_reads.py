@@ -21,7 +21,7 @@ def check(name, ok):
 class FakeServer:
     def __init__(self):
         self.files, self.reads, self.down, self.sent_bytes = {}, [], False, 0
-        self.drives, self.stick, self.seen = {}, {}, set()
+        self.drives, self.stick, self.seen, self.labels = {}, {}, set(), {}
 
     def __call__(self):
         if self.down:
@@ -53,7 +53,8 @@ class FakeServer:
         elif sql.startswith("INSERT INTO cnc_usb_drives"):
             self.drives[args[0]] = None
         elif sql.startswith("UPDATE cnc_usb_drives"):
-            self.drives[args[1]] = "in" if args[0] else None
+            self.drives[args[2]] = "in" if args[0] else None
+            self.labels[args[2]] = args[1]
         elif sql.startswith("DELETE FROM cnc_stick_files"):
             self.stick = {}
         elif sql.lstrip().startswith("INSERT INTO cnc_stick_files"):
@@ -149,10 +150,11 @@ drive_reads.IDLE_CHECK_SECONDS = 0.1
 stick.start()
 check("the drive is registered", wait(lambda: "zz_test_machine" in server.drives))
 d = u.UsbDrive(pi, f"{tmp}/run_state", on_build=stick.stick)
-d.stick.device, d.stick.folder = "/dev/zz", usb
+d.stick.device, d.stick.folder, d.stick.label = "/dev/zz", usb, "ZZ TEST"
 d._build()
 check("the stick is listed", wait(lambda: set(server.stick) == {"zz_big.nc", "zz_folder", "zz_folder/zz_test_2.nc",
                                                                  "zz_setup.exe"}) and server.drives["zz_test_machine"])
+check("the stick's label is sent", server.labels["zz_test_machine"] == "ZZ TEST")
 time.sleep(0.3)
 check("no bytes while the control isn't idle", not server.files and not any(r["sha"] for r in server.stick.values()))
 idle[0] = True
@@ -167,7 +169,7 @@ d.stick.device, d.stick.folder = None, None
 time.sleep(0.3)
 d._build()
 check("the list is emptied when the stick comes out", wait(lambda: not server.stick)
-      and server.drives["zz_test_machine"] is None)
+      and server.drives["zz_test_machine"] is None and server.labels["zz_test_machine"] is None)
 d.stick.device, d.stick.folder = "/dev/zz", usb
 d._build()
 check("put back, it's listed again without sending bytes again",

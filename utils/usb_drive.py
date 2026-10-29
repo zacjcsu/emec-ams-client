@@ -582,12 +582,22 @@ def find_stick():
     return None
 
 
+def volume_label(device):
+    try:
+        out = subprocess.run(["blkid", "-p", "-s", "LABEL", "-o", "value", device], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out or None
+
+
 class Stick:
     """Mounts the flash drive read-only at STICK_DIR while it's plugged in."""
 
     def __init__(self, folder=STICK_DIR):
         self.folder = folder
         self.device = None
+        self.label = None
         self._failed = None
         self._seen = None
 
@@ -609,6 +619,7 @@ class Stick:
                 if subprocess.run(["mount", "-o", options + extra, device, self.folder],
                                   capture_output=True).returncode == 0:
                     self.device, self._failed = device, None
+                    self.label = volume_label(device)
                     logger.info(f"Flash drive {device} mounted")
                     return
             logger.info(f"Cannot mount the flash drive {device}")
@@ -617,7 +628,7 @@ class Stick:
     def unmount(self):
         subprocess.run(["umount", "-l", self.folder], capture_output=True)
         logger.info(f"Flash drive {self.device} removed")
-        self.device = None
+        self.device = self.label = None
 
     @property
     def path(self):
@@ -689,7 +700,7 @@ class UsbDrive:
         logger.info(f"Drive built: {counts}")
         if self.on_build:
             usb = next((n for n in volume.root.children if n.name == "USB"), None)
-            self.on_build(None if usb is None else list(_listing(usb)))
+            self.on_build(None if usb is None else list(_listing(usb)), self.stick.label)
         return volume
 
     def quiet(self):

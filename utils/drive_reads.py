@@ -52,7 +52,7 @@ class ReadReporter:
         self._connect = connect
         self._can_read = can_read or (lambda: True)   # whether the stick can be read for its bytes now
         self._registered = False
-        self._stick = UNSET        # [(name, path, size, mtime, folder)], or None with no stick, from the drive's thread
+        self._stick = UNSET        # (label, files), or None with no stick, from the drive's thread
         self._listed = UNSET       # what the server lists
         self._unsent = []          # (name, path) of the listed files whose bytes haven't been sent
         self._stick_bytes = 0
@@ -77,9 +77,9 @@ class ReadReporter:
             self._queue.append((datetime.now(timezone.utc), name, path))
             self._wake.set()
 
-    def stick(self, files):
+    def stick(self, files, label=None):
         """What's on the flash drive now: [(name, path, size, mtime, folder)], or None with none in."""
-        self._stick = None if files is None else tuple(files)
+        self._stick = None if files is None else (label, tuple(files))
         self._wake.set()
 
     def _load(self, when, name, path):
@@ -124,7 +124,8 @@ class ReadReporter:
                 conn.commit()
                 self._pending.pop(0)
 
-    def _list_stick(self, conn, files):
+    def _list_stick(self, conn, stick):
+        label, files = stick or (None, None)
         conn.execute("DELETE FROM cnc_stick_files WHERE machine_id = %s", (self.machine_id,))
         if files:
             conn.execute("""
@@ -133,10 +134,10 @@ class ReadReporter:
                 FROM unnest(%s::text[], %s::bool[], %s::bigint[], %s::float8[]) AS x(n, f, s, t)""",
                 (self.machine_id, MAX_BYTES, [f[0] for f in files], [f[4] for f in files],
                  [0 if f[4] else f[2] for f in files], [f[3] for f in files]))
-        conn.execute("UPDATE cnc_usb_drives SET stick_at = CASE WHEN %s THEN now() END WHERE machine_id = %s",
-                     (files is not None, self.machine_id))
+        conn.execute("""UPDATE cnc_usb_drives SET stick_at = CASE WHEN %s THEN now() END, stick_label = %s
+                        WHERE machine_id = %s""", (files is not None, label, self.machine_id))
         conn.commit()
-        self._listed = files
+        self._listed = stick
         self._unsent = [(f[0], f[1]) for f in files or () if not f[4] and f[2] <= MAX_BYTES and program_file(f[0])]
         self._stick_bytes = 0
 
