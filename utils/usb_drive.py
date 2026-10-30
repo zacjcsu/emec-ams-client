@@ -51,6 +51,8 @@ EOC = 0x0FFFFFFF
 MAX_ENTRIES = 10000         # files and folders taken from one folder tree
 MAX_DEPTH = 8
 SKIP = {"system volume information", "$recycle.bin"}
+FAT_IOCTL_GET_ATTRIBUTES = 0x80047210   # linux/msdos_fs.h
+FAT_HIDDEN = 0x02
 QUIET_SECONDS = 5
 RUN_STATE_MAX_AGE = 90   # an older run state file means the app isn't running, so the state is unknown
 POLL_SECONDS = 0.25
@@ -93,8 +95,27 @@ class Node:
         self.entries = b""      # a folder's directory entries
 
 
-def scan(folder, depth=0, budget=None):
-    """The files and folders under folder, sorted, without hidden ones and links. budget limits how many."""
+def _fat_hidden(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        return bool(struct.unpack("I", fcntl.ioctl(fd, FAT_IOCTL_GET_ATTRIBUTES, bytes(4)))[0] & FAT_HIDDEN)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def _fat_time(t):
+    """A FAT time mounted with tz=UTC holds the wall clock of whoever wrote it, taken here as lab time."""
+    return time.mktime(time.gmtime(t)[:8] + (-1,))
+
+
+def scan(folder, depth=0, budget=None, fat=False):
+    """The files and folders under folder, sorted, without hidden ones and links. budget limits how many. fat is a
+    flash drive mounted by Stick, with FAT's hidden flag and local times."""
     budget = budget if budget is not None else [MAX_ENTRIES]
     out = []
     try:
@@ -105,17 +126,18 @@ def scan(folder, depth=0, budget=None):
     for e in entries:
         if budget[0] <= 0:
             break
-        if e.name.startswith(".") or e.name.casefold() in SKIP or e.is_symlink():
+        if e.name.startswith(".") or e.name.casefold() in SKIP or e.is_symlink() or fat and _fat_hidden(e.path):
             continue
         try:
             st = e.stat()
+            mtime = _fat_time(st.st_mtime) if fat else st.st_mtime
             if e.is_dir():
                 if depth < MAX_DEPTH:
                     budget[0] -= 1
-                    out.append(Node(e.name, e.path, mtime=st.st_mtime, children=scan(e.path, depth + 1, budget)))
+                    out.append(Node(e.name, e.path, mtime=mtime, children=scan(e.path, depth + 1, budget, fat)))
             elif e.is_file() and st.st_size < 2 ** 32:
                 budget[0] -= 1
-                out.append(Node(e.name, e.path, st.st_size, st.st_mtime,
+                out.append(Node(e.name, e.path, st.st_size, mtime,
                                 stamp=(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)))
         except OSError:
             continue
@@ -190,7 +212,8 @@ def _dirent(short, attr, cluster, size, mtime):
 
 
 class Volume:
-    """The drive's bytes, made up from folders: [(name on the drive, folder on the Pi or None), ...]."""
+    """The drive's bytes, made up from folders: [(name on the drive, folder on the Pi or None[, fat]), ...]. fat is
+    as for scan."""
 
     def __init__(self, folders, disk_bytes=DISK_BYTES, cluster_sectors=CLUSTER_SECTORS, label="EMEC"):
         self.total = disk_bytes // SECTOR
@@ -211,8 +234,9 @@ class Volume:
         self.data_start = self.fat_start + FATS * fat
         self.label = label.upper()[:11].ljust(11).encode("ascii")
         self.volume_id = int(time.time()) & 0xFFFFFFFF
-        self.root = Node("", children=[Node(name, path, mtime=time.time(), children=scan(path) if path else [])
-                                       for name, path in folders])
+        self.root = Node("", children=[Node(f[0], f[1], mtime=time.time(),
+                                            children=scan(f[1], fat=f[2:] == (True,)) if f[1] else [])
+                                       for f in folders])
         self._name(self.root, "")
         self._allocate()
         self._files = {}           # path: fd of each file read, kept open until the drive is rebuilt
@@ -598,6 +622,7 @@ class Stick:
         self.folder = folder
         self.device = None
         self.label = None
+        self.fat = False
         self._failed = None
         self._seen = None
 
@@ -615,10 +640,11 @@ class Stick:
         if device and device != self._failed:
             os.makedirs(self.folder, exist_ok=True)
             options = "ro,nosuid,nodev,noexec,noatime"
-            for extra in (",utf8", ""):   # utf8 is only for FAT
+            # FAT keeps times with no zone. Read as UTC, scan makes them lab time. utf8 and tz are only for FAT
+            for extra in (",utf8,tz=UTC", ""):
                 if subprocess.run(["mount", "-o", options + extra, device, self.folder],
                                   capture_output=True).returncode == 0:
-                    self.device, self._failed = device, None
+                    self.device, self._failed, self.fat = device, None, bool(extra)
                     self.label = volume_label(device)
                     logger.info(f"Flash drive {device} mounted")
                     return
@@ -629,6 +655,7 @@ class Stick:
         subprocess.run(["umount", "-l", self.folder], capture_output=True)
         logger.info(f"Flash drive {self.device} removed")
         self.device = self.label = None
+        self.fat = False
 
     @property
     def path(self):
@@ -693,7 +720,9 @@ class UsbDrive:
         return self.volume.read(offset, length)
 
     def _build(self):
-        folders = [("LOCAL", self.program_folder)] + ([("USB", self.stick.path)] if self.stick.path else [])
+        folders = [("LOCAL", self.program_folder)]
+        if self.stick.path:
+            folders.append(("USB", self.stick.path, self.stick.fat))
         volume = Volume(folders, disk_bytes=self.disk_bytes)
         volume.on_read = self.on_read
         counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)

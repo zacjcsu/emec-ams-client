@@ -1,5 +1,6 @@
 """Checks utils/usb_drive.py without a gadget or NBD: the made-up drive passes fsck.fat (if installed), shows the
 files with their bytes, and answers NBD requests. Run from the app folder: python tests/sim_usb_drive.py"""
+import calendar
 import os
 import shutil
 import socket
@@ -177,6 +178,12 @@ try:
 except OSError:
     check("a file changed before the machine opened it is a read error", True)
 v.close()
+
+os.environ["TZ"] = "America/Denver"
+time.tzset()
+walls = [(2026, 10, 27, 16, 54, 0), (2026, 1, 17, 13, 6, 0)]   # in daylight time and out of it
+check("a FAT time shows as written", all(
+    time.localtime(u._fat_time(calendar.timegm(w + (0, 0, 0))))[:6] == w for w in walls))
 
 shutil.rmtree(tmp)
 print(f"{failed} failed" if failed else "all passed")
