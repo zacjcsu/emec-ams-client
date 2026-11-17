@@ -41,6 +41,8 @@ v = u.Volume([("LOCAL", pi), ("USB", usb)], disk_bytes=48 * 1024 * 1024, cluster
 image = b"".join(v.sector(n) for n in range(v.total))
 check("partition table", image[510:512] == b"\x55\xaa" and image[450] == 0x0C)
 boot = image[u.PART_START * 512:u.PART_START * 512 + 512]
+check("clusters start on a 4 KiB page", all(
+    u.Volume([("LOCAL", None)], disk_bytes=gb * 1024 ** 3).data_start % 8 == 0 for gb in (1, 4, 64)))
 check("FAT32 boot sector", boot[82:90] == b"FAT32   " and boot[510:512] == b"\x55\xaa")
 check("read() matches the sectors", v.read(u.PART_START * 512 + 100, 1000) == image[u.PART_START * 512 + 100:
                                                                                       u.PART_START * 512 + 1100])
@@ -167,6 +169,21 @@ for s, p, held, why in (("Idle", u.FROM_DRIVE, True, "a classic with a LOCAL fil
                         ("", u.FROM_DRIVE, False, "unknown")):
     control(s, p)
     check(f"{why}: {'waits' if held else 'can change'}", d.in_use() == held)
+d.volume.close()
+
+# Reads before the machine is attached are the Pi's own, and don't count
+d.volume = u.Volume([("LOCAL", pi)], disk_bytes=48 * 1024 * 1024, cluster_sectors=1)
+seen = []
+d.volume.on_read = lambda shown, path: seen.append(shown)
+d.volume.watching = False
+read_file(d.volume, "LOCAL/Job 1/Operation 1.nc")
+control("Idle", u.FROM_DRIVE)
+d.volume.forget()
+check("a probe's read isn't reported", not seen)
+check("and doesn't hold the drive", not d.in_use())
+read_file(d.volume, "LOCAL/Job 1/Operation 1.nc")
+check("the machine's next read is reported", seen == ["LOCAL/Job 1/Operation 1.nc"])
+check("and holds the drive", d.in_use())
 d.volume.close()
 
 # A file read off a stick holds only while that stick is still in

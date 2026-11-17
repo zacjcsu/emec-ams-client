@@ -228,10 +228,13 @@ class Volume:
             if need <= fat:
                 break
             fat = need
+        # Clusters start on a 4 KiB page, so reading a page of one file never reads the start of the next
+        self.reserved = RESERVED + (-(PART_START + RESERVED + FATS * fat)) % 8
+        clusters = (self.part - self.reserved - FATS * fat) // self.spc
         if clusters < 65525:
             raise ValueError("too small for FAT32")
         self.fat_sectors, self.cluster_count = fat, clusters
-        self.fat_start = PART_START + RESERVED
+        self.fat_start = PART_START + self.reserved
         self.data_start = self.fat_start + FATS * fat
         self.label = label.upper()[:11].ljust(11).encode("ascii")
         self.volume_id = int(time.time()) & 0xFFFFFFFF
@@ -243,6 +246,7 @@ class Volume:
         self._files = {}           # path: fd of each file read, kept open until the drive is rebuilt
         self._logged = {}          # shown path: when its read was logged
         self.last_read = 0.0
+        self.watching = True       # whether reads count as the machine's
         self.on_read = None        # called with the shown path and the file's path as each logged read starts
 
     def _name(self, folder, shown):
@@ -335,7 +339,7 @@ class Volume:
 
     def _boot(self):
         b = bytearray(SECTOR)
-        struct.pack_into("<3s8sHBHBHHBHHHII", b, 0, b"\xeb\x58\x90", b"MSDOS5.0", SECTOR, self.spc, RESERVED, FATS, 0, 0,
+        struct.pack_into("<3s8sHBHBHHBHHHII", b, 0, b"\xeb\x58\x90", b"MSDOS5.0", SECTOR, self.spc, self.reserved, FATS, 0, 0,
                          0xF8, 0, 63, 255, PART_START, self.part)
         struct.pack_into("<IHHIHH12sBBBI11s8s", b, 36, self.fat_sectors, 0, 0, 2, 1, 6, bytes(12), 0x80, 0, 0x29,
                          self.volume_id, self.label, b"FAT32   ")
@@ -382,6 +386,12 @@ class Volume:
             self._files[node.path] = fd
         return os.pread(fd, length, offset).ljust(length, b"\x00")
 
+    def forget(self):
+        """Drops the reads so far, as the Pi's own, and counts reads from now on."""
+        self.close()
+        self._logged = {}
+        self.watching = True
+
     def opened(self):
         """Paths of the files the machine has read since the drive was built."""
         return list(self._files)
@@ -412,7 +422,7 @@ class Volume:
         offset = (cluster + 2 - first) * self.cluster_bytes + within * SECTOR
         if node.children is not None:
             return node.entries[offset:offset + SECTOR].ljust(SECTOR, b"\x00")
-        if offset == 0:
+        if offset == 0 and self.watching:
             self._logged_read(node)
         return self._file(node, offset, SECTOR) if offset < node.size else bytes(SECTOR)
 
@@ -527,6 +537,16 @@ class NbdDevice:
     def flush(self):
         """Drops the kernel's cached sectors, so a rebuilt drive is read afresh."""
         fcntl.ioctl(self.fd, BLKFLSBUF, 0)
+
+    def settle(self):
+        """Waits for udev to probe the new device, turns off read-ahead, and drops what the probe cached. Read-ahead
+        reads past what was asked for, into the first files. The kernel sets it again at each connect."""
+        subprocess.run(["udevadm", "settle", "--timeout=10"], capture_output=True)
+        try:
+            _write(f"/sys/block/{os.path.basename(self.device)}/queue/read_ahead_kb", "0")
+        except OSError as e:
+            logger.info(f"Cannot turn off read-ahead: {e}")
+        self.flush()
 
     def stop(self):
         if self.fd is not None:
@@ -752,7 +772,10 @@ class UsbDrive:
         time.sleep(POLL_SECONDS)
         self.stick.check()
         self.volume, shown = self._build(), self._signature()
+        self.volume.watching = False   # udev reads the new device, and those reads aren't the machine's
         self.nbd.start()
+        self.nbd.settle()
+        self.volume.forget()
         self.gadget.setup()
         self.gadget.attach()
         logger.info("Drive attached")
