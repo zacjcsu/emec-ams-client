@@ -212,6 +212,14 @@ data = d.volume.read((d.volume.data_start + (doc.first - 2) * d.volume.spc) * 51
 check("it has the reason as comments, with no moves",
       data == b"%\n(MACHINE MAINTENANCE)\n(SPINDLE NOISY 100)\n(SEE STAFF)\nM30\n%\n")
 d.volume.close()
+listed = []
+d.on_build = lambda files, label: listed.append(files)
+d.stick.folder, d.stick.device = usb, "/dev/zz_test"
+d.volume = d._build()
+check("the stick stays off the drive", [c.name for c in d.volume.root.children] == [u.MAINTENANCE_NAME])
+check("but is still listed for the dashboard", listed[-1] and "zz_test_1.nc" in [f[0] for f in listed[-1]])
+d.volume.close()
+d.stick.device, d.on_build = None, None
 u.maintenance_note.write("", d.maintenance_file)
 d.volume = d._build()
 data = d.volume.read((d.volume.data_start + (node_in(d.volume, u.MAINTENANCE_NAME).first - 2) * d.volume.spc) * 512, 64)

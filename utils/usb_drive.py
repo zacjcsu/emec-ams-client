@@ -789,6 +789,8 @@ class UsbDrive:
             logger.info(f"Drive built: {counts}")
         if self.on_build:
             usb = next((n for n in volume.root.children if n.name == "USB"), None)
+            if note is not None and self.stick.path:   # the dashboard still lists a stick the drive leaves out
+                usb = Node("USB", self.stick.path, children=scan(self.stick.path, fat=self.stick.fat))
             self.on_build(None if usb is None else list(_listing(usb)), self.stick.label)
         return volume
 
