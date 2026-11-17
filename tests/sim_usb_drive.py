@@ -125,8 +125,7 @@ def control(s, p=""):
 control("Idle", "O01001")
 check("idle just now isn't settled", not d.settled(now=1000))
 check("idle 15 minutes is", d.settled(now=1000 + u.RESTART_IDLE_SECONDS))
-for s, p, why in (("Feed hold", "O07777", "feed hold"), ("Off", "", "off"), ("", "", "unknown"),
-                  ("Idle", u.FROM_DRIVE, "a drive program open")):
+for s, p, why in (("Feed hold", "O07777", "feed hold"), ("Off", "", "off"), ("", "", "unknown")):
     control(s, p)
     check(f"{why} isn't settled", not d.settled(now=5000))
     control("Idle", "O01001")
@@ -136,18 +135,53 @@ control("Idle", "O01001")
 os.utime(state, (time.time() - u.RUN_STATE_MAX_AGE - 1,) * 2)
 check("a stale idle isn't settled", not d.settled(now=9000))
 check("with no control configured, a restart doesn't wait", u.UsbDrive(pi, state, run_program_file=program, control=False).settled(now=9000))
-# A change of files waits while the control may be using a file on the drive
+# A change of files waits while the control may be using a file on the drive it can still read
 d.volume = u.Volume([("LOCAL", pi)], disk_bytes=48 * 1024 * 1024, cluster_sectors=1)
+
+
+def read_file(vol, shown):
+    n = node_in(vol, shown)
+    vol.read((vol.data_start + (n.first - 2) * vol.spc) * 512, 512)
+
+
+def node_in(vol, shown):
+    n = vol.root
+    for part in shown.split("/"):
+        n = next(c for c in n.children if c.name == part)
+    return n
+
+
 for s, p, held, why in (("Feed hold", "O01001", True, "running"),
-                        ("Idle", u.FROM_DRIVE, True, "a classic with a drive program open"),
-                        ("Idle", "Operation 1.nc", True, "an NGC with a drive file open"),
+                        ("Idle", u.FROM_DRIVE, False, "a classic's O07777 with nothing read since the build"),
+                        ("Idle", "Operation 1.nc", False, "an NGC file on the drive not read since the build")):
+    control(s, p)
+    check(f"{why}: {'waits' if held else 'can change'}", d.in_use() == held)
+read_file(d.volume, "LOCAL/Job 1/Operation 1.nc")
+for s, p, held, why in (("Idle", u.FROM_DRIVE, True, "a classic with a LOCAL file read"),
+                        ("Idle", "Operation 1.nc", True, "an NGC with that file read"),
                         ("Idle", "OPERATION 1.NC", True, "in any case"),
+                        ("Idle", "O01000.NC", False, "an NGC with another file open"),
                         ("Idle", "O01001", False, "idle with a memory program"),
                         ("Idle", "", False, "idle with nothing open"),
                         ("Off", u.FROM_DRIVE, False, "off"),
                         ("", u.FROM_DRIVE, False, "unknown")):
     control(s, p)
     check(f"{why}: {'waits' if held else 'can change'}", d.in_use() == held)
+d.volume.close()
+
+# A file read off a stick holds only while that stick is still in
+d.stick.folder, d.stick.device, d.stick.mounts = usb, "/dev/zz_test", 1
+d.volume = d._build()
+read_file(d.volume, "USB/zz_test_1.nc")
+control("Idle", u.FROM_DRIVE)
+check("a classic with a stick file read waits", d.in_use())
+d.stick.device = None
+check("with the stick pulled, it can change", not d.in_use())
+d.stick.device, d.stick.mounts = "/dev/zz_test", 2
+check("with another stick in, it can change", not d.in_use())
+d.stick.device, d.stick.mounts = None, 0
+d.volume.close()
+d.volume = None
 
 # The drive keeps giving a file the bytes it had when built
 keep = f"{pi}/Keep.nc"

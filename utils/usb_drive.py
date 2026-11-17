@@ -243,7 +243,6 @@ class Volume:
         self._files = {}           # path: fd of each file read, kept open until the drive is rebuilt
         self._logged = {}          # shown path: when its read was logged
         self.last_read = 0.0
-        self._names = None
         self.on_read = None        # called with the shown path and the file's path as each logged read starts
 
     def _name(self, folder, shown):
@@ -383,11 +382,9 @@ class Volume:
             self._files[node.path] = fd
         return os.pread(fd, length, offset).ljust(length, b"\x00")
 
-    def has_file(self, name):
-        """Whether a file of this name is anywhere on the drive. Case doesn't matter."""
-        if self._names is None:
-            self._names = {n.name.casefold() for n in _files(self.root)}
-        return name.casefold() in self._names
+    def opened(self):
+        """Paths of the files the machine has read since the drive was built."""
+        return list(self._files)
 
     def _logged_read(self, node):
         now = time.monotonic()
@@ -626,6 +623,7 @@ class Stick:
         self.fat = False
         self._failed = None
         self._seen = None
+        self.mounts = 0        # counts mounts, so files from an earlier one show as gone
 
     def check(self):
         device = find_stick()
@@ -646,6 +644,7 @@ class Stick:
                 if subprocess.run(["mount", "-o", options + extra, device, self.folder],
                                   capture_output=True).returncode == 0:
                     self.device, self._failed, self.fat = device, None, bool(extra)
+                    self.mounts += 1
                     self.label = volume_label(device)
                     logger.info(f"Flash drive {device} mounted")
                     return
@@ -713,6 +712,7 @@ class UsbDrive:
         self._idle_since = None
         self.stick = Stick()
         self.volume = None
+        self._built_mount = None   # the stick mount the drive was built from
         self.nbd = NbdDevice(self._read, disk_bytes)
         self.gadget = Gadget()
         self._stop = threading.Event()
@@ -726,6 +726,7 @@ class UsbDrive:
             folders.append(("USB", self.stick.path, self.stick.fat))
         volume = Volume(folders, disk_bytes=self.disk_bytes)
         volume.on_read = self.on_read
+        self._built_mount = self.stick.mounts if self.stick.path else None
         counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
         logger.info(f"Drive built: {counts}")
         if self.on_build:
@@ -802,10 +803,19 @@ class UsbDrive:
             logger.info("Drive plugged in again")
         return False
 
+    def readable(self):
+        """Paths of the files the machine read since the build that it can still read. A pulled stick's can't be."""
+        if self.volume is None:
+            return []
+        stick = os.path.join(self.stick.folder, "")
+        gone = self._built_mount is None or self._built_mount != (self.stick.mounts if self.stick.path else None)
+        return [p for p in self.volume.opened() if not (gone and p.startswith(stick))]
+
     def in_use(self):
         """Whether the control may be using a file on the drive: anything but idle or off, or idle with a program
-        from the drive open. A classic names that O07777. An NGC names the file, so any file of that name on the drive
-        counts. An unknown state doesn't hold, since the app isn't running to tell."""
+        from the drive open that it can still read. A classic names that O07777, which can also be the only program
+        in memory, so it holds only once a file was read since the build. An NGC names the file. An unknown state
+        doesn't hold, since the app isn't running to tell."""
         state = run_state(self.run_state_file)
         if state in ("", "Off"):
             return False
@@ -813,9 +823,9 @@ class UsbDrive:
             return True
         program = open_program(self.run_program_file)
         if program == FROM_DRIVE:
-            return True
-        name = program.replace("\\", "/").rsplit("/", 1)[-1]
-        return bool(name) and self.volume is not None and self.volume.has_file(name)
+            return bool(self.readable())
+        name = program.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        return bool(name) and any(os.path.basename(p).casefold() == name for p in self.readable())
 
     def settled(self, now=None):
         """Whether a restart for new code can't cut anything off. Unlike a change of files, it waits for the
