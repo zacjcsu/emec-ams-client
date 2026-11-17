@@ -200,6 +200,30 @@ d.stick.device, d.stick.mounts = None, 0
 d.volume.close()
 d.volume = None
 
+# While maintenance locks the machine, the drive holds only the maintenance document
+d.maintenance_file, d.maintenance_dir = f"{tmp}/maintenance", f"{tmp}/maintenance_doc"
+shown = d._signature()
+u.maintenance_note.write("Spindle (noisy) 100%\nSee staff ä", d.maintenance_file)
+check("maintenance changes the signature", d._signature() != shown)
+d.volume = d._build()
+check("only the document is on the drive", [c.name for c in d.volume.root.children] == [u.MAINTENANCE_NAME])
+doc = node_in(d.volume, u.MAINTENANCE_NAME)
+data = d.volume.read((d.volume.data_start + (doc.first - 2) * d.volume.spc) * 512, doc.size)
+check("it has the reason as comments, with no moves",
+      data == b"%\n(MACHINE MAINTENANCE)\n(SPINDLE NOISY 100)\n(SEE STAFF)\nM30\n%\n")
+d.volume.close()
+u.maintenance_note.write("", d.maintenance_file)
+d.volume = d._build()
+data = d.volume.read((d.volume.data_start + (node_in(d.volume, u.MAINTENANCE_NAME).first - 2) * d.volume.spc) * 512, 64)
+check("with no reason, it has the heading", data.rstrip(b"\x00") == b"%\n(MACHINE MAINTENANCE)\nM30\n%\n")
+d.volume.close()
+u.maintenance_note.write(None, d.maintenance_file)
+check("out of maintenance, the signature is as before", d._signature() == shown)
+d.volume = d._build()
+check("and LOCAL is back", [c.name for c in d.volume.root.children] == ["LOCAL"])
+d.volume.close()
+d.volume = None
+
 # The drive keeps giving a file the bytes it had when built
 keep = f"{pi}/Keep.nc"
 for path, data in ((keep, b"G1 X1\n" * 200), (f"{pi}/Late.nc", b"G1 Y1\n" * 200)):

@@ -1,6 +1,7 @@
 """Shows the machine one USB drive with two folders: LOCAL, the dashboard's programs in PROGRAM_FOLDER, and USB, the
 flash drive plugged into the Pi, left out while there's none. The Pi's USB-C port acts as the drive (USB gadget mode).
-The pendant's USB jack is wired to one of the Pi's USB-A ports.
+The pendant's USB jack is wired to one of the Pi's USB-A ports. While maintenance locks the machine, the drive holds only
+MAINTENANCE_NAME, with the reason the app writes to utils/maintenance_note.py's file.
 
 USB storage works in 512-byte sectors, not files. The drive is made up as it's read: the partition table, the FAT32
 boot sector, the FATs and the folders come from the file names and sizes, and a file's sectors are read from the file
@@ -17,8 +18,8 @@ machine opened it answers with a read error, and so does one that's gone, like o
 
 It needs root for the gadget (configfs), the block device (/dev/nbd0) and mounting the flash drive, so it runs as its
 own service. usb_drive_setup.sh installs it. Each file the machine reads is logged to logs/usb_drive.log, and sent to
-the dashboard by utils/drive_reads.py. When either file changes, it starts itself again once the drive could change,
-so new code needs no sudo.
+the dashboard by utils/drive_reads.py. When it or a module it shares with the app changes, it starts itself again once
+the drive could change, so new code needs no sudo.
 Run it with: sudo .venv/bin/python -m utils.usb_drive
 """
 import bisect
@@ -26,6 +27,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import struct
@@ -35,7 +37,7 @@ import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from utils import drive_reads
+from utils import drive_reads, maintenance_note
 
 logger = logging.getLogger("usb_drive")
 
@@ -62,6 +64,8 @@ STICK_DIR = "/run/emec-usb-drive/stick"
 GADGET = "/sys/kernel/config/usb_gadget/emec"
 NBD_DEVICE = "/dev/nbd0"
 RUN_STATE_FILE = "data/run_state"   # written by utils/live_state.py
+MAINTENANCE_DIR = "/run/emec-usb-drive/maintenance"   # holds the maintenance document while it's shown
+MAINTENANCE_NAME = "MAINTENANCE.NC"
 RUN_PROGRAM_FILE = "data/run_program"   # the program it last saw, written just before the state
 FROM_DRIVE = "O07777"      # the program a classic control reports while one from the drive is open
 RESTART_IDLE_SECONDS = 15 * 60   # new code waits for this much idle in a row
@@ -238,9 +242,14 @@ class Volume:
         self.data_start = self.fat_start + FATS * fat
         self.label = label.upper()[:11].ljust(11).encode("ascii")
         self.volume_id = int(time.time()) & 0xFFFFFFFF
-        self.root = Node("", children=[Node(f[0], f[1], mtime=time.time(),
-                                            children=scan(f[1], fat=f[2:] == (True,)) if f[1] else [])
-                                       for f in folders])
+        children = []
+        for f in folders:
+            nodes = scan(f[1], fat=f[2:] == (True,)) if f[1] else []
+            if f[0] is None:   # the folder's contents go at the top
+                children.extend(nodes)
+            else:
+                children.append(Node(f[0], f[1], mtime=time.time(), children=nodes))
+        self.root = Node("", children=children)
         self._name(self.root, "")
         self._allocate()
         self._files = {}           # path: fd of each file read, kept open until the drive is rebuilt
@@ -682,10 +691,29 @@ class Stick:
         return self.folder if self.device else None
 
 
+def maintenance_document(note):
+    """A program with the reason as comments and no moves. Comments drop parentheses, and the control shows capitals."""
+    lines = ["%", "(MACHINE MAINTENANCE)"]
+    for line in note.splitlines():
+        line = re.sub(r"[^ -~]|[()%]", "", line).strip().upper()
+        if line:
+            lines.append(f"({line})")
+    lines += ["M30", "%", ""]
+    return "\n".join(lines).encode("ascii")
+
+
+def write_maintenance_document(folder, note):
+    os.makedirs(folder, exist_ok=True)
+    for name in os.listdir(folder):
+        os.remove(os.path.join(folder, name))
+    with open(os.path.join(folder, MAINTENANCE_NAME), "wb") as f:
+        f.write(maintenance_document(note))
+
+
 def _code_stamp():
-    """Changes with this file, utils/drive_reads.py or config.json."""
+    """Changes with this file, the modules it shares with the app, or config.json."""
     out = []
-    for path in (__file__, drive_reads.__file__, CONFIG_FILE):
+    for path in (__file__, drive_reads.__file__, maintenance_note.__file__, CONFIG_FILE):
         try:
             st = os.stat(path)
             out.append((st.st_mtime_ns, st.st_size))
@@ -733,6 +761,8 @@ class UsbDrive:
         self.stick = Stick()
         self.volume = None
         self._built_mount = None   # the stick mount the drive was built from
+        self.maintenance_file = maintenance_note.MAINTENANCE_FILE
+        self.maintenance_dir = MAINTENANCE_DIR
         self.nbd = NbdDevice(self._read, disk_bytes)
         self.gadget = Gadget()
         self._stop = threading.Event()
@@ -741,14 +771,22 @@ class UsbDrive:
         return self.volume.read(offset, length)
 
     def _build(self):
-        folders = [("LOCAL", self.program_folder)]
-        if self.stick.path:
-            folders.append(("USB", self.stick.path, self.stick.fat))
+        note = maintenance_note.read(self.maintenance_file)
+        if note is not None:
+            write_maintenance_document(self.maintenance_dir, note)
+            folders = [(None, self.maintenance_dir)]
+        else:
+            folders = [("LOCAL", self.program_folder)]
+            if self.stick.path:
+                folders.append(("USB", self.stick.path, self.stick.fat))
         volume = Volume(folders, disk_bytes=self.disk_bytes)
         volume.on_read = self.on_read
         self._built_mount = self.stick.mounts if self.stick.path else None
-        counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
-        logger.info(f"Drive built: {counts}")
+        if note is not None:
+            logger.info("Drive built: maintenance document")
+        else:
+            counts = ", ".join(f"{sum(1 for _ in _files(n))} in {n.name}" for n in volume.root.children)
+            logger.info(f"Drive built: {counts}")
         if self.on_build:
             usb = next((n for n in volume.root.children if n.name == "USB"), None)
             self.on_build(None if usb is None else list(_listing(usb)), self.stick.label)
@@ -760,7 +798,7 @@ class UsbDrive:
                 and (self.volume is None or time.monotonic() - self.volume.last_read >= QUIET_SECONDS))
 
     def _signature(self):
-        return self.stick.device, signature(self.program_folder)
+        return self.stick.device, signature(self.program_folder), maintenance_note.read(self.maintenance_file)
 
     def run(self):
         try:

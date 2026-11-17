@@ -3,6 +3,7 @@ import threading
 import time
 import psycopg
 from db.server_sync import get_server_connection, cardless_claim, cardless_check
+from utils import maintenance_note
 from config.constants import (
     EMERGENCY_POLL_SECONDS, ENFORCE_ACCESS_DURING_SESSION, ACCESS_RECHECK_SECONDS, MACHINE_ID,
     STATUS_MAINTENANCE, CARDLESS_START_SECONDS,
@@ -48,6 +49,7 @@ class LockoutMonitor:
         self.maintenance_active = False
         self.message = None
         self._message_failing = False
+        self._drive_note = False  # what was last written for the drive. False until the first write
         self.revoked_reason = None
         self.revoked_via = None  # the server's `via` for that reason (a disabled user's two-line message)
         self._watched = None  # csu_id of the user on the machine
@@ -155,6 +157,21 @@ class LockoutMonitor:
             logger.info(f"[LOCKOUT] Maintenance message: {message}")
             self.message = message
 
+    def _write_drive_note(self):
+        """The drive shows the maintenance reason in place of the programs while maintenance locks the machine."""
+        note = None
+        if self.maintenance_active and not self.bypass_maintenance:
+            # A due service task's message isn't a maintenance reason
+            lines = self.message if self.message and self.message[0] != "Service due" else ()
+            note = "\n".join(line for line in lines if line.strip())
+        if note == self._drive_note:
+            return
+        try:
+            maintenance_note.write(note)
+            self._drive_note = note
+        except OSError as e:
+            logger.warning(f"[LOCKOUT] Cannot write the maintenance note for the drive: {e}")
+
     def _check_suspended(self, conn, session_id):
         """True if the dashboard suspended this session."""
         try:
@@ -227,6 +244,7 @@ class LockoutMonitor:
                 ).fetchone()
                 self._set_maintenance(bool(mrow) and mrow["machine_status"] == STATUS_MAINTENANCE)
                 self._read_message(conn)
+                self._write_drive_note()
 
                 with self._lock:
                     watched, watched_card, watched_session = self._watched, self._watched_card, self._watched_session
